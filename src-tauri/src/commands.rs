@@ -871,19 +871,29 @@ async fn upload_settings_and_attachments(app: &tauri::AppHandle, state: &State<'
             let data = state.0.lock().unwrap();
             (get_attachment_dir(app, &data), data.attachments.clone())
         };
-        if !attachments.is_empty() {
+        if attachments.is_empty() {
+            msgs.push("无附件需要上传".into());
+        } else {
             let mut att_cfg = cfg.clone();
             let path = att_cfg.path.trim_start_matches('/').trim_end_matches('/');
             att_cfg.path = format!("{}/attachments", path);
             let _ = webdav::ensure_dir(&att_cfg).await;
+            let mut uploaded = 0;
+            let mut skipped = 0;
             for att in &attachments {
                 let local_path = attach_dir.join(&att.filename);
                 if local_path.exists() {
                     match webdav::upload_file(cfg, local_path.to_str().unwrap(), &att.filename).await {
-                        Ok(msg) => msgs.push(msg),
-                        Err(e) => msgs.push(format!("附件 {} 上传跳过（{}）", att.filename, e)),
+                        Ok(msg) => { msgs.push(msg); uploaded += 1; }
+                        Err(e) => { msgs.push(format!("附件 {} 上传跳过（{}）", att.filename, e)); skipped += 1; }
                     }
+                } else {
+                    msgs.push(format!("附件 {} 本地文件缺失，跳过", att.filename));
+                    skipped += 1;
                 }
+            }
+            if uploaded == 0 && skipped > 0 {
+                msgs.push("⚠ 所有附件均未能上传，请检查 WebDAV 账号密码（需使用服务商提供的专用应用密码，而非登录密码）".into());
             }
         }
     }

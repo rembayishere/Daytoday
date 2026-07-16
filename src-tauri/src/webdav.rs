@@ -13,7 +13,7 @@ fn http_client() -> &'static reqwest::Client {
     })
 }
 
-async fn send_request(
+pub(crate) async fn send_request(
     method: &[u8],
     url: &str,
     cfg: &WebdavConfig,
