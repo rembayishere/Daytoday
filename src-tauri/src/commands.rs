@@ -28,6 +28,11 @@ fn now_iso() -> String {
     Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()
 }
 
+fn now_iso_filename() -> String {
+    use chrono::Local;
+    Local::now().format("%Y%m%d_%H%M%S").to_string()
+}
+
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn gen_id() -> u64 {
@@ -565,24 +570,62 @@ pub fn open_file_explorer(path: String) -> Result<(), String> {
 // === Settings ===
 
 #[tauri::command]
-pub fn save_attachment_dir(app: tauri::AppHandle, state: State<'_, AppState>, dir: String) -> Result<AppData, String> {
+pub fn save_attachment_dir(app: tauri::AppHandle, state: State<'_, AppState>, dir: String) -> Result<AttachmentMigrateResult, String> {
     let mut d = state.0.lock().unwrap();
     let old_attach_dir = get_attachment_dir(&app, &d);
+    let old_dir_str = old_attach_dir.to_string_lossy().to_string();
     d.attachment_dir = dir;
     let new_attach_dir = get_attachment_dir(&app, &d);
+    let new_dir_str = new_attach_dir.to_string_lossy().to_string();
     std::fs::create_dir_all(&new_attach_dir).map_err(|e| format!("创建附件目录失败: {}", e))?;
+
+    let mut result = AttachmentMigrateResult {
+        old_dir: old_dir_str.clone(),
+        new_dir: new_dir_str.clone(),
+        moved: 0,
+        skipped: 0,
+        backup_dir: String::new(),
+    };
 
     // 迁移已有附件文件：把旧目录下的文件移动到新目录，避免资料「丢失」
     if old_attach_dir != new_attach_dir && old_attach_dir.exists() {
+        // 备份目录：仅当出现同名冲突时创建，用于保留旧文件以便核对
+        let backup_dir = new_attach_dir.join(format!("_migration_backup_{}", now_iso_filename()));
+        let mut backup_created = false;
+
         for att in &d.attachments {
             let src = old_attach_dir.join(&att.filename);
-            if src.exists() {
-                let dst = new_attach_dir.join(&att.filename);
-                // 保留子文件夹结构
-                if !att.folder.is_empty() {
-                    let dst_dir = new_attach_dir.join(&att.folder);
-                    std::fs::create_dir_all(&dst_dir).map_err(|e| format!("创建目录失败: {}", e))?;
+            if !src.exists() {
+                continue;
+            }
+            // 目标保留子文件夹结构
+            let dst_rel = if att.folder.is_empty() {
+                std::path::PathBuf::from(&att.filename)
+            } else {
+                std::path::PathBuf::from(&att.folder).join(&att.filename)
+            };
+            let dst = new_attach_dir.join(&dst_rel);
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+            }
+
+            if dst.exists() {
+                // 冲突：同名文件已存在于新目录，保留新目录文件，旧文件备份后跳过
+                if !backup_created {
+                    std::fs::create_dir_all(&backup_dir).map_err(|e| format!("创建备份目录失败: {}", e))?;
+                    backup_created = true;
+                    result.backup_dir = backup_dir.to_string_lossy().to_string();
                 }
+                let backup_dst = backup_dir.join(&dst_rel);
+                if let Some(parent) = backup_dst.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                // 备份旧文件（不覆盖新目录现有文件）
+                if let Ok(bytes) = std::fs::read(&src) {
+                    let _ = std::fs::write(&backup_dst, &bytes);
+                }
+                result.skipped += 1;
+            } else {
                 if let Err(e) = std::fs::rename(&src, &dst) {
                     // 跨盘/权限导致 rename 失败时退化为复制
                     if let Ok(bytes) = std::fs::read(&src) {
@@ -592,12 +635,13 @@ pub fn save_attachment_dir(app: tauri::AppHandle, state: State<'_, AppState>, di
                         return Err(format!("迁移附件 {} 失败: {}", att.filename, e));
                     }
                 }
+                result.moved += 1;
             }
         }
     }
 
     storage::save(&app, &d)?;
-    Ok(d.clone())
+    Ok(result)
 }
 
 #[tauri::command]

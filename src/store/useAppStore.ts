@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
-import type { AppData, DataDirResult, Flashcard, RemoteAttachment } from '../types'
+import type { AppData, DataDirResult, Flashcard, RemoteAttachment, AttachmentMigrateResult } from '../types'
 
 interface LearningState {
   active: boolean
@@ -61,7 +61,8 @@ interface AppStore {
   moveAttachment: (id: number, folder: string) => Promise<void>
   openAttachmentFolder: (id: number) => Promise<void>
   listRemoteAttachments: () => Promise<RemoteAttachment[]>
-  saveAttachmentDir: (dir: string) => Promise<void>
+  saveAttachmentDir: (dir: string) => Promise<AttachmentMigrateResult>
+  deleteAttachmentDirBackup: (path: string) => Promise<void>
   saveAiConfig: (url: string, model: string, key: string) => Promise<void>
   saveWebdavConfig: (
     url: string, user: string, pass: string, path: string,
@@ -321,9 +322,14 @@ export const useAppStore = create<AppStore>((set) => ({
   },
   saveAttachmentDir: async (dir) => {
     try {
-      const result = await invoke<AppData>('save_attachment_dir', { dir })
-      set({ data: result })
-    } catch (e) { console.error('saveAttachmentDir failed:', e) }
+      const result = await invoke<AttachmentMigrateResult>('save_attachment_dir', { dir })
+      return result
+    } catch (e) { console.error('saveAttachmentDir failed:', e); throw e }
+  },
+  deleteAttachmentDirBackup: async (path) => {
+    try {
+      await invoke('delete_file', { path })
+    } catch (e) { console.error('deleteAttachmentDirBackup failed:', e) }
   },
   saveAiConfig: async (url, model, key) => {
     try {

@@ -3,6 +3,7 @@ import { useAppStore } from '../store/useAppStore'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
+import type { AttachmentMigrateResult } from '../types'
 
 const SHORTCUT_KEYS: { key: 'send_note' | 'quick_note'; label: string }[] = [
   { key: 'send_note', label: '发送笔记（Ctrl+Enter）' },
@@ -42,6 +43,7 @@ export default function SettingsPanel() {
   const saveWebdavConfig = useAppStore((s) => s.saveWebdavConfig)
   const saveShortcuts = useAppStore((s) => s.saveShortcuts)
   const saveAttachmentDir = useAppStore((s) => s.saveAttachmentDir)
+  const deleteAttachmentDirBackup = useAppStore((s) => s.deleteAttachmentDirBackup)
   const saveDataDir = useAppStore((s) => s.saveDataDir)
   const deleteFile = useAppStore((s) => s.deleteFile)
   const openFileExplorer = useAppStore((s) => s.openFileExplorer)
@@ -72,6 +74,7 @@ export default function SettingsPanel() {
   const [scopeExpanded, setScopeExpanded] = useState(true)
   const [attDir, setAttDir] = useState('')
   const [attDirResult, setAttDirResult] = useState('')
+  const [attMigrate, setAttMigrate] = useState<AttachmentMigrateResult | null>(null)
 
   const [dataDir, setDataDir] = useState('')
   const [oldDataDir, setOldDataDir] = useState('')
@@ -461,12 +464,35 @@ export default function SettingsPanel() {
           </div>
           <div style={{display:'flex',gap:'8px',marginTop:'4px'}}>
             <button className="btn btn-primary" onClick={async () => {
-              await saveAttachmentDir(attDir)
-              setAttDirResult('✅ 已保存')
-              setTimeout(() => setAttDirResult(''), 2000)
+              try {
+                const res = await saveAttachmentDir(attDir)
+                setAttMigrate(res)
+                setAttDirResult('✅ 已保存')
+                setTimeout(() => setAttDirResult(''), 2000)
+              } catch (e: any) {
+                setAttDirResult('❌ ' + (typeof e === 'string' ? e : (e?.message || '保存失败')))
+              }
             }}><i className="fas fa-save"></i> 保存</button>
             {attDirResult && <span className="tr" style={{fontSize:'.72rem',color:'var(--text-primary)',alignSelf:'center'}}>{attDirResult}</span>}
           </div>
+          {attMigrate && (attMigrate.moved > 0 || attMigrate.skipped > 0) && (
+            <div style={{marginTop:'8px',fontSize:'.74rem',color:'var(--text-primary)',background:'var(--bg-sidebar)',border:'1px solid var(--border)',borderRadius:'10px',padding:'8px 10px'}}>
+              <div style={{fontWeight:600,marginBottom:'4px'}}><i className="fas fa-exchange-alt" style={{marginRight:'4px',color:'var(--accent)'}}></i> 迁移报告</div>
+              <div>· 已从旧目录迁移 <b>{attMigrate.moved}</b> 个文件到新目录</div>
+              {attMigrate.skipped > 0 && (
+                <div style={{color:'var(--priority-high)'}}>· {attMigrate.skipped} 个文件因新目录已存在同名文件被跳过（已备份到下方目录，未覆盖新文件）</div>
+              )}
+              {attMigrate.backup_dir && (
+                <div style={{marginTop:'4px',display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
+                  <span style={{fontSize:'.7rem',color:'var(--text-muted)'}}>备份目录：{attMigrate.backup_dir}</span>
+                  <button className="btn btn-secondary" style={{padding:'2px 10px',fontSize:'.68rem'}} onClick={async () => {
+                    await deleteAttachmentDirBackup(attMigrate.backup_dir)
+                    setAttMigrate({ ...attMigrate, backup_dir: '', skipped: 0 })
+                  }}><i className="fas fa-trash"></i> 删除备份</button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <div className="sg2">
           <h4><i className="fas fa-keyboard" style={{color:'var(--accent)'}}></i> 快捷键</h4>

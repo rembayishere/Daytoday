@@ -251,6 +251,18 @@ pub struct DataDirResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentMigrateResult {
+    pub old_dir: String,
+    pub new_dir: String,
+    /// 成功迁移的文件数
+    pub moved: u32,
+    /// 因新目录已存在同名文件而跳过的文件数（保留新目录现有文件）
+    pub skipped: u32,
+    /// 备份目录路径（当存在冲突时创建，供用户手动核对）
+    pub backup_dir: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsData {
     pub ai_config: AiConfig,
     pub shortcuts: ShortcutConfig,

@@ -125,6 +125,14 @@ export interface RemoteAttachment {
   exists_local: boolean
 }
 
+export interface AttachmentMigrateResult {
+  old_dir: string
+  new_dir: string
+  moved: number
+  skipped: number
+  backup_dir: string
+}
+
 export interface BootstrapConfig {
   data_dir: string
 }
