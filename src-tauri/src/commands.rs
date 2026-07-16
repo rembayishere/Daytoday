@@ -884,7 +884,16 @@ async fn upload_settings_and_attachments(app: &tauri::AppHandle, state: &State<'
                 let local_path = attach_dir.join(&att.filename);
                 if local_path.exists() {
                     match webdav::upload_file(cfg, local_path.to_str().unwrap(), &att.filename).await {
-                        Ok(msg) => { msgs.push(msg); uploaded += 1; }
+                        Ok(msg) => {
+                            let remote = format!("attachments/{}", att.filename);
+                            if webdav::remote_file_exists(cfg, &remote).await {
+                                msgs.push(format!("{}（已确认云端存在）", msg));
+                                uploaded += 1;
+                            } else {
+                                msgs.push(format!("附件 {} 上传返回成功，但服务端校验未找到该文件（云盘可能不显示 WebDAV 上传的文件，请用 WebDAV 客户端如 RaiDrive 查看）", att.filename));
+                                skipped += 1;
+                            }
+                        }
                         Err(e) => { msgs.push(format!("附件 {} 上传跳过（{}）", att.filename, e)); skipped += 1; }
                     }
                 } else {

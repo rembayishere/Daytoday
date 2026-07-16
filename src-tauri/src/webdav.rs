@@ -275,3 +275,14 @@ pub async fn download_file(cfg: &WebdavConfig, filename: &str, local_dir: &str) 
     std::fs::write(&local_file, &decrypted).map_err(|e| e.to_string())?;
     Ok(format!("附件 {} 已下载", filename))
 }
+
+/// 上传后校验：用 PROPFIND 确认服务端确实存在该文件
+pub async fn remote_file_exists(cfg: &WebdavConfig, remote_path: &str) -> bool {
+    let base_url = cfg.url.trim_end_matches('/').to_string();
+    let path = cfg.path.trim_start_matches('/').trim_end_matches('/');
+    let target = format!("{}/{}/{}", base_url, path, remote_path);
+    match send_request(b"PROPFIND", &target, cfg, None, 10).await {
+        Ok(resp) => resp.status().is_success() || resp.status().as_u16() == 207,
+        Err(_) => false,
+    }
+}
