@@ -218,6 +218,13 @@ pub struct Attachment {
 impl Identifiable for Attachment { fn id(&self) -> u64 { self.id } }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteAttachment {
+    pub filename: String,
+    pub size: u64,
+    pub exists_local: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShortcutConfig {
     pub send_note: String,
     pub quick_note: String,

@@ -2,7 +2,7 @@
 import { useAppStore } from '../store/useAppStore'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import type { Attachment, Note } from '../types'
+import type { Attachment, Note, RemoteAttachment } from '../types'
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B'
@@ -26,6 +26,24 @@ export default function FilesPanel() {
   const [linkModalAttId, setLinkModalAttId] = useState<number | null>(null)
   const [linkSearch, setLinkSearch] = useState('')
   const [moveTarget, setMoveTarget] = useState<{ id: number; show: boolean }>({ id: 0, show: false })
+  const [remoteAtts, setRemoteAtts] = useState<RemoteAttachment[] | null>(null)
+  const [remoteLoading, setRemoteLoading] = useState(false)
+  const [remoteError, setRemoteError] = useState('')
+  const listRemoteAttachments = useAppStore((s) => s.listRemoteAttachments)
+
+  const loadRemote = async () => {
+    setRemoteLoading(true)
+    setRemoteError('')
+    try {
+      const list = await listRemoteAttachments()
+      setRemoteAtts(list)
+    } catch (e: any) {
+      setRemoteError(typeof e === 'string' ? e : (e?.message || '加载云端附件失败'))
+      setRemoteAtts([])
+    } finally {
+      setRemoteLoading(false)
+    }
+  }
   const searchRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -174,7 +192,32 @@ export default function FilesPanel() {
           <i className="fas fa-upload"></i> {uploading ? '上传中...' : '选择文件上传'}
         </button>
         <span className="file-hint">{dragOver ? '释放以上传文件' : '支持任意文件类型，也可拖拽文件到此处'}</span>
+        <button className="btn btn-secondary" style={{ marginLeft: 'auto', padding: '6px 12px', fontSize: '.74rem' }} onClick={loadRemote} disabled={remoteLoading}>
+          <i className="fas fa-cloud-download-alt"></i> {remoteLoading ? '查询中...' : '查看云端附件'}
+        </button>
       </div>
+      {remoteAtts !== null && (
+        <div className="cloud-att-list">
+          <div className="cloud-att-head">
+            <span><i className="fas fa-cloud" style={{ color: 'var(--accent)', marginRight: 6 }}></i>云端附件（{remoteAtts.length}）</span>
+            <button className="btn btn-ghost" style={{ padding: '2px 8px', fontSize: '.72rem' }} onClick={loadRemote} disabled={remoteLoading}>
+              <i className="fas fa-sync"></i> 刷新
+            </button>
+          </div>
+          {remoteError && <div className="em" style={{ color: 'var(--priority-high)' }}>{remoteError}</div>}
+          {!remoteError && remoteAtts.length === 0 && <div className="em">云端暂无附件（已确认上传成功的文件会显示在这里）</div>}
+          {remoteAtts.map((a) => (
+            <div className="cloud-att-item" key={a.filename}>
+              <i className="fas fa-file"></i>
+              <span className="cloud-att-name">{a.filename}</span>
+              <span className="cloud-att-size">{a.size >= 1024 * 1024 ? (a.size / (1024 * 1024)).toFixed(1) + ' MB' : a.size >= 1024 ? (a.size / 1024).toFixed(1) + ' KB' : a.size + ' B'}</span>
+              {a.exists_local
+                ? <span className="cloud-att-badge local"><i className="fas fa-check"></i> 本地已存在</span>
+                : <span className="cloud-att-badge remote">仅云端</span>}
+            </div>
+          ))}
+        </div>
+      )}
       <div className="file-folder-bar">
         <div className="file-folders">
           <span

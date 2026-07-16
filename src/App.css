@@ -390,6 +390,15 @@ input::placeholder,textarea::placeholder{color:var(--text-placeholder)}
 .file-upload-bar{display:flex;align-items:center;gap:10px;background:var(--bg-sidebar);border-radius:12px;padding:12px 14px;border:2px dashed var(--border);flex-shrink:0;transition:all .2s}
 .file-upload-bar.drag-over{background:var(--accent-light);border-color:var(--accent);border-style:solid;transform:scale(1.02)}
 .file-hint{font-size:.72rem;color:var(--text-muted)}
+.cloud-att-list{margin:10px 0 4px;background:var(--bg-sidebar);border:1px solid var(--border);border-radius:12px;padding:10px 12px}
+.cloud-att-head{display:flex;align-items:center;justify-content:space-between;font-size:.76rem;font-weight:600;color:var(--text-secondary);margin-bottom:6px}
+.cloud-att-item{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:8px;font-size:.78rem;color:var(--text-primary)}
+.cloud-att-item:hover{background:var(--btn-secondary-bg)}
+.cloud-att-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cloud-att-size{font-size:.68rem;color:var(--text-muted);white-space:nowrap}
+.cloud-att-badge{font-size:.64rem;padding:1px 7px;border-radius:8px;white-space:nowrap}
+.cloud-att-badge.local{background:var(--accent-light);color:var(--accent)}
+.cloud-att-badge.remote{background:#fdecec;color:#c0392b}
 .file-list{display:flex;flex-direction:column;gap:6px;flex:1;overflow-y:auto}
 .file-item{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:10px 14px;display:flex;align-items:flex-start;gap:10px;position:relative}
 .file-item:hover{border-color:var(--text-muted)}

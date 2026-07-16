@@ -49,6 +49,7 @@ pub fn run() {
             commands::unlink_note_attachment,
             commands::move_attachment,
             commands::open_attachment_folder,
+            commands::list_remote_attachments,
             commands::read_file,
             commands::save_attachment_dir,
             commands::save_ai_config,

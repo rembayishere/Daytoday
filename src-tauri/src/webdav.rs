@@ -286,3 +286,127 @@ pub async fn remote_file_exists(cfg: &WebdavConfig, remote_path: &str) -> bool {
         Err(_) => false,
     }
 }
+
+const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:">
+  <d:prop>
+    <d:href/>
+    <d:getcontentlength/>
+    <d:getcontenttype/>
+  </d:prop>
+</d:propfind>"#;
+
+/// 对某个目录发 PROPFIND（Depth:1），返回响应体文本
+pub async fn propfind_dir(cfg: &WebdavConfig, target: &str) -> Result<String, String> {
+    let client = http_client();
+    let req = client
+        .request(Method::from_bytes(b"PROPFIND").unwrap(), target)
+        .basic_auth(&cfg.user, Some(&cfg.pass))
+        .header("Depth", "1")
+        .timeout(std::time::Duration::from_secs(15))
+        .body(PROPFIND_BODY);
+    let resp = req.send().await.map_err(|e| format!("请求失败: {}", e))?;
+    let status = resp.status();
+    if !(status.is_success() || status.as_u16() == 207) {
+        return Err(format!("PROPFIND 失败 (HTTP {})", status));
+    }
+    resp.text().await.map_err(|e| e.to_string())
+}
+
+/// 解析 WebDAV multistatus XML，提取子文件（排除目录自身）的名称与大小
+pub fn parse_propfind(body: &str, local_names: &[String]) -> Vec<crate::models::RemoteAttachment> {
+    let mut results = Vec::new();
+    // 按 <response> 分块
+    let blocks: Vec<&str> = body.split("<response").skip(1).collect();
+    for block in blocks {
+        // 取该 response 内的 href 作为文件名基准
+        let href = match extract_tag(block, "href").first().cloned() {
+            Some(h) => h,
+            None => continue,
+        };
+        let decoded = decode_href(&href);
+        let name = match decoded.rsplit('/').nth(0) {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => continue,
+        };
+        // 跳过目录自身（以 / 结尾或 . 目录）
+        if decoded.ends_with('/') || name == "." || name == ".." {
+            continue;
+        }
+        // 跳过非附件目录下的其它（理论上已在 attachments/ 下）
+        let size = extract_tag(block, "getcontentlength")
+            .first()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        let exists_local = local_names.iter().any(|n| n == &name);
+        results.push(crate::models::RemoteAttachment {
+            filename: name,
+            size,
+            exists_local,
+        });
+    }
+    results
+}
+
+fn decode_href(href: &str) -> String {
+    // 处理 %XX URL 编码（如中文/空格）
+    let bytes = href.as_bytes();
+    let mut out: Vec<u8> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                out.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn hex_val(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn extract_tag<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut s = xml;
+    loop {
+        // 找一个开标签： <tag ...> 或 <ns:tag ...>
+        let open = match s.find('<') {
+            Some(i) => i,
+            None => break,
+        };
+        let rest = &s[open + 1..];
+        // 标签名（忽略命名空间前缀 ns:）
+        let name = match rest.find('>') {
+            Some(end) => &rest[..end],
+            None => break,
+        };
+        let name = name.split_whitespace().next().unwrap_or("");
+        let name = name.split(':').last().unwrap_or(name);
+        if name != tag {
+            s = &rest[rest.find('>').unwrap_or(0) + 1..];
+            continue;
+        }
+        let tag_end = rest.find('>').unwrap_or(rest.len() - 1);
+        // 闭合标签： </tag> 或 </ns:tag>
+        let close = format!("</{}>", tag);
+        let close_ns = format!("</d:{}>", tag);
+        let end = match rest[tag_end..].find(&close).or_else(|| rest[tag_end..].find(&close_ns)) {
+            Some(e) => tag_end + e,
+            None => { s = &rest[tag_end + 1..]; continue; }
+        };
+        out.push(rest[tag_end + 1..end].trim());
+        s = &rest[end + close.len()..];
+    }
+    out
+}

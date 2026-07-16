@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
-import type { AppData, DataDirResult, Flashcard } from '../types'
+import type { AppData, DataDirResult, Flashcard, RemoteAttachment } from '../types'
 
 interface LearningState {
   active: boolean
@@ -60,6 +60,7 @@ interface AppStore {
   unlinkNoteAttachment: (attachmentId: number, noteId: number) => Promise<void>
   moveAttachment: (id: number, folder: string) => Promise<void>
   openAttachmentFolder: (id: number) => Promise<void>
+  listRemoteAttachments: () => Promise<RemoteAttachment[]>
   saveAttachmentDir: (dir: string) => Promise<void>
   saveAiConfig: (url: string, model: string, key: string) => Promise<void>
   saveWebdavConfig: (
@@ -309,6 +310,14 @@ export const useAppStore = create<AppStore>((set) => ({
     try {
       await invoke('open_attachment_folder', { id })
     } catch (e) { console.error('openAttachmentFolder failed:', e) }
+  },
+  listRemoteAttachments: async () => {
+    try {
+      return await invoke<RemoteAttachment[]>('list_remote_attachments')
+    } catch (e) {
+      console.error('listRemoteAttachments failed:', e)
+      throw e
+    }
   },
   saveAttachmentDir: async (dir) => {
     try {

@@ -119,6 +119,12 @@ export interface Attachment {
   date: string
 }
 
+export interface RemoteAttachment {
+  filename: string
+  size: number
+  exists_local: boolean
+}
+
 export interface BootstrapConfig {
   data_dir: string
 }

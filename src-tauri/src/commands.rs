@@ -486,8 +486,7 @@ pub fn move_attachment(app: tauri::AppHandle, state: State<'_, AppState>, id: u6
 }
 
 #[tauri::command]
-pub fn open_attachment_folder(state: State<'_, AppState>, app: tauri::AppHandle, id: u64) -> Result<(), String> {
-    let d = state.0.lock().unwrap();
+pub fn open_attachment_folder(state: State<'_, AppState>, app: tauri::AppHandle, id: u64) -> Result<(), String> {    let d = state.0.lock().unwrap();
     let attach_dir = get_attachment_dir(&app, &d);
     let path = if id == 0 {
         attach_dir
@@ -502,6 +501,31 @@ pub fn open_attachment_folder(state: State<'_, AppState>, app: tauri::AppHandle,
     };
     std::process::Command::new("explorer").arg(&path).spawn().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn list_remote_attachments(
+    state: State<'_, AppState>,
+) -> Result<Vec<RemoteAttachment>, String> {
+    let (cfg, local_names) = {
+        let d = state.0.lock().unwrap();
+        let local: Vec<String> = d.attachments.iter().map(|a| a.filename.clone()).collect();
+        (d.webdav_config.clone(), local)
+    };
+    if cfg.url.is_empty() || cfg.user.is_empty() || cfg.pass.is_empty() {
+        return Err("未配置 WebDAV，无法列出云端附件".into());
+    }
+
+    let base_url = cfg.url.trim_end_matches('/').to_string();
+    let path = cfg.path.trim_start_matches('/').trim_end_matches('/');
+    let target = format!("{}/{}/attachments/", base_url, path);
+
+    let body = match webdav::propfind_dir(&cfg, &target).await {
+        Ok(b) => b,
+        Err(e) => return Err(format!("列出云端附件失败：{}", e)),
+    };
+
+    Ok(webdav::parse_propfind(&body, &local_names))
 }
 
 // === File Operations ===
