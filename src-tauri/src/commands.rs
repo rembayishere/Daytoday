@@ -567,8 +567,35 @@ pub fn open_file_explorer(path: String) -> Result<(), String> {
 #[tauri::command]
 pub fn save_attachment_dir(app: tauri::AppHandle, state: State<'_, AppState>, dir: String) -> Result<AppData, String> {
     let mut d = state.0.lock().unwrap();
+    let old_attach_dir = get_attachment_dir(&app, &d);
     d.attachment_dir = dir;
-    std::fs::create_dir_all(get_attachment_dir(&app, &d)).map_err(|e| format!("创建附件目录失败: {}", e))?;
+    let new_attach_dir = get_attachment_dir(&app, &d);
+    std::fs::create_dir_all(&new_attach_dir).map_err(|e| format!("创建附件目录失败: {}", e))?;
+
+    // 迁移已有附件文件：把旧目录下的文件移动到新目录，避免资料「丢失」
+    if old_attach_dir != new_attach_dir && old_attach_dir.exists() {
+        for att in &d.attachments {
+            let src = old_attach_dir.join(&att.filename);
+            if src.exists() {
+                let dst = new_attach_dir.join(&att.filename);
+                // 保留子文件夹结构
+                if !att.folder.is_empty() {
+                    let dst_dir = new_attach_dir.join(&att.folder);
+                    std::fs::create_dir_all(&dst_dir).map_err(|e| format!("创建目录失败: {}", e))?;
+                }
+                if let Err(e) = std::fs::rename(&src, &dst) {
+                    // 跨盘/权限导致 rename 失败时退化为复制
+                    if let Ok(bytes) = std::fs::read(&src) {
+                        std::fs::write(&dst, &bytes).map_err(|e2| format!("迁移附件 {} 失败: {} / {}", att.filename, e, e2))?;
+                        let _ = std::fs::remove_file(&src);
+                    } else {
+                        return Err(format!("迁移附件 {} 失败: {}", att.filename, e));
+                    }
+                }
+            }
+        }
+    }
+
     storage::save(&app, &d)?;
     Ok(d.clone())
 }
