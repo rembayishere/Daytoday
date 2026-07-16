@@ -1,0 +1,41 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicepkg/vscode-tauri/master/schemas/tauri.conf.schema.json",
+  "productName": "Daytoday",
+  "version": "1.0.0",
+  "identifier": "com.daytoday.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Daytoday",
+        "width": 1450,
+        "height": 850,
+        "minWidth": 900,
+        "minHeight": 600,
+        "center": true,
+        "transparent": false,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "msi",
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "wix": {
+        "language": "zh-CN"
+      }
+    }
+  }
+}
