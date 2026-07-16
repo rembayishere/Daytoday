@@ -9,6 +9,14 @@ pnpm-debug.log*
 # Rust build artifacts
 src-tauri/target/
 *.rs.bk
+
+# Local data / secrets (contains user credentials)
+test/
+*.local.json
+flomo-plus.json
+
+# Docs
+docs/
 lerna-debug.log*
 
 node_modules
