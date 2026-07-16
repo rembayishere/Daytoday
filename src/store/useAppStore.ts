@@ -68,7 +68,7 @@ interface AppStore {
     sync_notes: boolean, sync_summaries: boolean, sync_clips: boolean,
     sync_questions: boolean, sync_flashcards: boolean, sync_tasks: boolean, sync_attachments: boolean,
     sync_mode: string,
-    sync_interval: number, pull_mode: string, settings_pass: string,
+    sync_interval: number, pull_mode: string, settings_pass: string, sync_settings: boolean,
   ) => Promise<void>
   syncPull: () => Promise<void>
   saveShortcuts: (send_note: string, quick_note: string) => Promise<void>
