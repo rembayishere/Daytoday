@@ -150,6 +150,8 @@ pub struct WebdavConfig {
     pub encrypt: bool,
     pub enc_pass: String,
     #[serde(default)]
+    pub enc_algorithm: String,
+    #[serde(default)]
     pub sync_notes: bool,
     #[serde(default)]
     pub sync_summaries: bool,
@@ -163,6 +165,8 @@ pub struct WebdavConfig {
     pub sync_tasks: bool,
     #[serde(default)]
     pub sync_attachments: bool,
+    #[serde(default)]
+    pub allow_unencrypted_attachment: bool,
     #[serde(default)]
     pub sync_mode: String,
     #[serde(default)]
@@ -188,6 +192,7 @@ impl Default for WebdavConfig {
             path: "/daytoday-backup/".into(),
             encrypt: true,
             enc_pass: String::new(),
+            enc_algorithm: "aes256-gcm".into(),
             sync_notes: true,
             sync_summaries: true,
             sync_clips: true,
@@ -195,6 +200,7 @@ impl Default for WebdavConfig {
             sync_flashcards: true,
             sync_tasks: true,
             sync_attachments: true,
+            allow_unencrypted_attachment: false,
             sync_mode: "upload".into(),
             sync_interval: 0,
             pull_mode: "add".into(),
@@ -222,6 +228,12 @@ pub struct RemoteAttachment {
     pub filename: String,
     pub size: u64,
     pub exists_local: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentFileStatus {
+    pub id: u64,
+    pub exists: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,6 +298,10 @@ pub struct AppData {
     #[serde(default)]
     pub attachment_dir: String,
     #[serde(default)]
+    pub attachment_move_mode: bool,
+    #[serde(default)]
+    pub folders: Vec<String>,
+    #[serde(default)]
     pub data_dir: String,
 }
 
@@ -315,6 +331,8 @@ impl Default for AppData {
             webdav_config: WebdavConfig::default(),
             shortcuts: ShortcutConfig::default(),
             attachment_dir: String::new(),
+            attachment_move_mode: false,
+            folders: vec![],
             data_dir: String::new(),
         }
     }
@@ -367,7 +385,7 @@ pub fn apply_sync_scope(mut data: AppData, cfg: &WebdavConfig) -> AppData {
     if !cfg.sync_questions { data.questions.clear(); }
     if !cfg.sync_flashcards { data.flashcards.clear(); }
     if !cfg.sync_tasks { data.tasks = TaskBoard { todo: vec![], doing: vec![], done: vec![] }; }
-    if !cfg.sync_attachments { data.attachments.clear(); }
+    // 注意：附件记录始终同步（sync_attachments 仅控制是否下载文件），故不再清空 data.attachments
     data
 }
 

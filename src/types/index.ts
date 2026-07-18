@@ -90,6 +90,7 @@ export interface WebdavConfig {
   path: string
   encrypt: boolean
   enc_pass: string
+  enc_algorithm?: string
   sync_notes?: boolean
   sync_summaries?: boolean
   sync_clips?: boolean
@@ -102,6 +103,7 @@ export interface WebdavConfig {
   pull_mode?: string
   settings_pass?: string
   sync_settings?: boolean
+  allow_unencrypted_attachment?: boolean
 }
 
 export interface ShortcutConfig {
@@ -123,6 +125,11 @@ export interface RemoteAttachment {
   filename: string
   size: number
   exists_local: boolean
+}
+
+export interface AttachmentFileStatus {
+  id: number
+  exists: boolean
 }
 
 export interface AttachmentMigrateResult {
@@ -156,6 +163,8 @@ export interface AppData {
   webdav_config: WebdavConfig
   shortcuts: ShortcutConfig
   attachment_dir?: string
+  attachment_move_mode?: boolean
+  folders?: string[]
   data_dir?: string
 }
 

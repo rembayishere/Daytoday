@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>资料面板 · 文件夹交互 Demo</title>
+<style>
+  :root {
+    --text: #6b6375;
+    --text-h: #08060d;
+    --bg: #fff;
+    --bg-card: #fff;
+    --bg-sidebar: #faf9fb;
+    --bg-input: #f4f3f6;
+    --border: #e5e4e7;
+    --border-input: #d8d6dd;
+    --accent: #aa3bff;
+    --accent-light: rgba(170, 59, 255, 0.08);
+    --accent-bg: rgba(170, 59, 255, 0.1);
+    --btn-secondary-bg: #f1eef5;
+    --btn-secondary-hover: #e7e2ef;
+    --btn-secondary-text: #5a5560;
+    --text-secondary: #8a8392;
+    --text-muted: #a8a2b0;
+    --priority-high: #e0533d;
+    --file-icon: #b9a7d6;
+    --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --text: #9ca3af; --text-h: #f3f4f6; --bg: #16171d; --bg-card: #1c1d25;
+      --bg-sidebar: #1a1b22; --bg-input: #20212b; --border: #2e303a; --border-input: #3a3c48;
+      --accent: #c084fc; --accent-light: rgba(192,132,252,0.14); --accent-bg: rgba(192,132,252,0.15);
+      --btn-secondary-bg: #262732; --btn-secondary-hover: #2f313e; --btn-secondary-text: #c4c0cc;
+      --text-secondary: #a9a4b4; --text-muted: #6f6a78; --priority-high: #ff7866; --file-icon: #8b7bb0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 var(--sans); color: var(--text); background: var(--bg); }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 24px 18px 60px; }
+  .st { font-size: 1.05rem; font-weight: 600; color: var(--text-h); margin-bottom: 14px; }
+
+  /* 上传条 */
+  .file-upload-bar { display:flex; align-items:center; gap:10px; background:var(--bg-sidebar); border-radius:12px; padding:12px 14px; border:2px dashed var(--border); margin-bottom:12px; }
+  .file-hint { font-size:.72rem; color:var(--text-muted); }
+  .btn { font:inherit; cursor:pointer; border:1px solid var(--border-input); background:var(--bg-card); color:var(--text-h); border-radius:10px; padding:6px 12px; font-size:.76rem; transition:all .15s; }
+  .btn:hover { border-color:var(--accent); }
+  .btn-primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .btn-primary:hover { filter:brightness(1.05); }
+  .btn-secondary { background:var(--btn-secondary-bg); color:var(--btn-secondary-text); border-color:transparent; }
+  .btn-secondary:hover { background:var(--btn-secondary-hover); }
+  .btn-ghost { background:transparent; border-color:transparent; color:var(--text-secondary); }
+  .btn:disabled { opacity:.45; cursor:not-allowed; }
+
+  /* 胶囊文件夹条 */
+  .file-folder-bar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+  .capsule { display:inline-flex; align-items:center; gap:6px; padding:5px 12px; border-radius:999px; font-size:.74rem; color:var(--btn-secondary-text); background:var(--btn-secondary-bg); cursor:pointer; transition:all .15s; white-space:nowrap; position:relative; }
+  .capsule:hover { background:var(--btn-secondary-hover); }
+  .capsule.active { background:var(--accent); color:#fff; }
+  .capsule .count { font-size:.66rem; opacity:.75; }
+  .capsule .cog { font-size:.7rem; opacity:.7; }
+  .capsule:hover .cog { opacity:1; }
+  .capsule-add { border:1px dashed var(--border-input); background:transparent; }
+  .capsule-add:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-light); }
+  .capsule-input { border:1px solid var(--accent); border-radius:999px; padding:5px 12px; font-size:.74rem; background:var(--bg-input); color:var(--text-h); outline:none; width:130px; }
+
+  /* 文件夹行内菜单 */
+  .folder-menu { position:absolute; top:calc(100% + 6px); left:0; z-index:30; background:var(--bg-card); border:1px solid var(--border-input); border-radius:10px; padding:5px; min-width:150px; box-shadow:0 6px 20px rgba(0,0,0,.1); }
+  .folder-menu-item { display:flex; align-items:center; gap:8px; padding:6px 10px; cursor:pointer; border-radius:7px; font-size:.76rem; color:var(--text-h); }
+  .folder-menu-item:hover { background:var(--btn-secondary-bg); }
+  .folder-menu-item.danger { color:var(--priority-high); }
+
+  /* 工具行 */
+  .toolbar { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+  .toolbar .spacer { flex:1; }
+
+  /* 批量条 */
+  .file-batch-bar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; background:var(--bg-sidebar); border:1px solid var(--border); border-radius:12px; padding:8px 12px; margin-bottom:8px; }
+  .file-batch-count { font-size:.72rem; color:var(--text-muted); }
+  .file-batch-actions { display:flex; gap:6px; margin-left:auto; flex-wrap:wrap; }
+
+  /* 资料列表 */
+  .file-list { display:flex; flex-direction:column; gap:6px; }
+  .file-item { background:var(--bg-card); border:1px solid var(--border); border-radius:12px; padding:10px 14px; display:flex; align-items:flex-start; gap:10px; position:relative; }
+  .file-item:hover { border-color:var(--text-muted); }
+  .file-item.selected { border-color:var(--accent); background:var(--accent-light); }
+  .file-select-box { font-size:1rem; color:var(--accent); padding-top:2px; flex-shrink:0; }
+  .file-icon { font-size:1.2rem; color:var(--file-icon); padding-top:2px; }
+  .file-info { flex:1; min-width:0; }
+  .file-name { font-weight:600; font-size:.82rem; color:var(--text-h); word-break:break-all; }
+  .file-meta { display:flex; gap:10px; font-size:.65rem; color:var(--text-muted); margin-top:2px; flex-wrap:wrap; }
+  .file-actions { display:flex; gap:4px; flex-shrink:0; opacity:0; transition:opacity .15s; }
+  .file-item:hover .file-actions { opacity:1; }
+  .file-actions button { padding:3px 9px; font-size:.68rem; }
+  .em { text-align:center; color:var(--text-muted); font-size:.8rem; padding:24px 0; }
+  .em .row { display:flex; gap:8px; justify-content:center; margin-top:12px; }
+
+  /* 弹窗 */
+  .mask { position:fixed; inset:0; background:rgba(0,0,0,.4); display:flex; align-items:center; justify-content:center; z-index:100; }
+  .modal { background:var(--bg-card); border:1px solid var(--border-input); border-radius:14px; padding:18px; width:min(420px,92vw); box-shadow:0 12px 40px rgba(0,0,0,.25); }
+  .modal h3 { margin:0 0 12px; font-size:.95rem; color:var(--text-h); }
+  .modal p { font-size:.8rem; color:var(--text-secondary); line-height:1.6; }
+  .modal ul { margin:8px 0; padding-left:18px; font-size:.74rem; color:var(--text-muted); }
+  .modal .foot { display:flex; justify-content:flex-end; gap:8px; margin-top:14px; }
+  .picker-list { max-height:260px; overflow-y:auto; display:flex; flex-direction:column; gap:4px; margin:8px 0; }
+  .picker-item { display:flex; align-items:center; gap:8px; padding:8px 10px; border-radius:9px; cursor:pointer; font-size:.8rem; color:var(--text-h); }
+  .picker-item:hover { background:var(--btn-secondary-bg); }
+  .picker-item .num { margin-left:auto; font-size:.68rem; color:var(--text-muted); }
+  .picker-new { display:flex; gap:6px; margin-top:8px; }
+  .picker-new input { flex:1; border:1px solid var(--border-input); border-radius:9px; padding:6px 10px; font-size:.78rem; background:var(--bg-input); color:var(--text-h); outline:none; }
+  .danger-btn { background:var(--priority-high); color:#fff; border-color:var(--priority-high); }
+  .note { font-size:.68rem; color:var(--text-muted); margin-top:10px; }
+
+  /* 文件夹管理面板 */
+  .manage-panel { background:var(--bg-sidebar); border:1px solid var(--border); border-radius:12px; padding:10px 12px; margin-bottom:10px; }
+  .manage-row { display:flex; align-items:center; gap:8px; padding:5px 4px; border-radius:8px; }
+  .manage-row:hover { background:var(--btn-secondary-bg); }
+  .manage-dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+  .manage-name { flex:1; font-size:.8rem; color:var(--text-h); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .manage-count { font-size:.68rem; color:var(--text-muted); }
+  .manage-row .m-btn { padding:3px 9px; font-size:.68rem; }
+  .manage-unclassified { font-size:.7rem; color:var(--text-muted); padding:4px 2px; }
+  .color-dot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="st">资料上传 <span style="font-size:.7rem;color:var(--text-muted);font-weight:400"> · 文件夹交互 Demo（模拟数据）</span></div>
+
+  <div class="file-upload-bar">
+    <button class="btn btn-primary" onclick="toast('打开文件选择（模拟）')">＋ 选择文件上传</button>
+    <span class="file-hint">支持任意文件类型，也可拖拽文件到此处</span>
+  </div>
+
+  <!-- 胶囊文件夹条 -->
+  <div class="file-folder-bar" id="folderBar"></div>
+
+  <!-- 工具行 -->
+  <div class="toolbar">
+    <button class="btn btn-secondary" id="selectToggle" onclick="toggleSelectMode()"><i class="fas fa-check-square"></i> 多选</button>
+    <span class="spacer"></span>
+    <span id="curFolderLabel" style="font-size:.72rem;color:var(--text-muted)"></span>
+  </div>
+
+  <!-- 批量条 -->
+  <div id="batchBar"></div>
+
+  <!-- 资料列表 -->
+  <div class="file-list" id="fileList"></div>
+</div>
+
+<!-- 弹窗容器 -->
+<div id="modalRoot"></div>
+
+<script>
+  // ===== 模拟数据 =====
+  let state = {
+    activeFolder: '',
+    selectMode: false,
+    selected: new Set(),
+    folders: ['工作', '学习', '项目'],
+    files: [
+      { id: 1, name: '需求文档.docx', size: 245000, created: '2026-07-10', folder: '工作' },
+      { id: 2, name: '周报.pdf', size: 88000, created: '2026-07-12', folder: '工作' },
+      { id: 3, name: '算法笔记.md', size: 12000, created: '2026-07-08', folder: '学习' },
+      { id: 4, name: '英语词表.csv', size: 34000, created: '2026-07-09', folder: '学习' },
+      { id: 5, name: '设计稿.png', size: 560000, created: '2026-07-14', folder: '项目' },
+      { id: 6, name: '会议纪要.txt', size: 5200, created: '2026-07-15', folder: '' },
+      { id: 7, name: '灵感收集.txt', size: 3100, created: '2026-07-16', folder: '' },
+    ],
+    menuOpen: null,     // 打开菜单的文件夹名
+    manageOpen: false,  // 文件夹管理面板
+    addingFolder: false,
+    newFolderName: '',
+    renameFolder: null,
+    renameVal: '',
+    movePick: null,     // { ids:[...] }
+    delFolder: null,    // 待删除的文件夹名
+    folderColors: { '工作':'#aa3bff', '学习':'#2bb3a3', '项目':'#e0913d' },
+  };
+
+  const $ = (id) => document.getElementById(id);
+  function fmtSize(b){ return b<1024?' '+b+' B':b<1048576?(b/1024).toFixed(1)+' KB':(b/1048576).toFixed(1)+' MB'; }
+  function countOf(f){ return state.files.filter(f0=>f0.folder===f).length; }
+  function filtered(){
+    if(state.activeFolder==='__unc__') return state.files.filter(f=>!f.folder);
+    if(state.activeFolder) return state.files.filter(f=>f.folder===state.activeFolder);
+    return state.files;
+  }
+  function toast(msg){ alert(msg); }
+
+  function render(){
+    renderFolderBar();
+    $('curFolderLabel').textContent = state.activeFolder==='__unc__' ? `未分类（${state.files.filter(f=>!f.folder).length}）` : state.activeFolder ? `当前：${state.activeFolder}（${countOf(state.activeFolder)}）` : `全部（${state.files.length}）`;
+    renderBatchBar();
+    renderList();
+  }
+
+  // ===== 胶囊文件夹条 =====
+  function renderFolderBar(){
+    const bar = $('folderBar');
+    bar.innerHTML = '';
+    const mk = (label, active, onClick, extraClass='', children=[]) => {
+      const el = document.createElement('span');
+      el.className = 'capsule' + (active?' active':'') + (extraClass?' '+extraClass:'');
+      el.innerHTML = label;
+      el.onclick = onClick;
+      children.forEach(c=>el.appendChild(c));
+      bar.appendChild(el);
+      return el;
+    };
+    // 未分类（folder === ''）
+    const unc = state.files.filter(f=>!f.folder).length;
+    mk(`<span class="color-dot" style="background:#9aa0aa"></span>未分类 <span class="count">${unc}</span>`, state.activeFolder==='__unc__', ()=>{ state.activeFolder='__unc__'; state.manageOpen=false; render(); });
+    // 各文件夹
+    state.folders.forEach(f=>{
+      const dot = `<span class="color-dot" style="background:${state.folderColors[f]||'#aa3bff'}"></span>`;
+      mk(`${dot}${f} <span class="count">${countOf(f)}</span>`, state.activeFolder===f, ()=>{ state.activeFolder=f; state.manageOpen=false; render(); });
+    });
+    // 新建 / 输入
+    if(state.addingFolder || state.renameFolder){
+      const inp = document.createElement('input');
+      inp.className='capsule-input';
+      inp.value = state.renameFolder ? state.renameVal : state.newFolderName;
+      inp.placeholder='文件夹名';
+      inp.oninput=(e)=>{ if(state.renameFolder) state.renameVal=e.target.value; else state.newFolderName=e.target.value; };
+      inp.onkeydown=(e)=>{ if(e.key==='Enter') commitFolder(); if(e.key==='Escape'){ state.addingFolder=false; state.renameFolder=null; render(); } };
+      bar.appendChild(inp);
+      setTimeout(()=>inp.focus(), 30);
+      const ok = document.createElement('button'); ok.className='btn btn-primary'; ok.innerHTML='<i class="fas fa-check"></i>';
+      ok.onclick=commitFolder; bar.appendChild(ok);
+    } else {
+      mk(`<i class="fas fa-plus"></i> 新建`, false, ()=>{ state.addingFolder=true; render(); }, 'capsule-add');
+      // 常驻管理按钮
+      const m = document.createElement('span');
+      m.className='capsule' + (state.manageOpen?' active':'');
+      m.innerHTML='<i class="fas fa-sliders-h"></i> 管理';
+      m.onclick=()=>{ state.manageOpen=!state.manageOpen; render(); };
+      bar.appendChild(m);
+    }
+    // 管理面板
+    if(state.manageOpen) renderManagePanel();
+  }
+
+  function renderManagePanel(){
+    const bar = $('folderBar');
+    const panel = document.createElement('div');
+    panel.className='manage-panel';
+    panel.style.width='100%';
+    panel.innerHTML = `<div style="font-size:.72rem;font-weight:600;color:var(--text-secondary);margin-bottom:6px;display:flex;justify-content:space-between;align-items:center">
+        <span><i class="fas fa-folder-gear"></i> 文件夹管理</span>
+        <span style="font-size:.66rem;color:var(--text-muted)">未分类资料默认进收件箱，可整理到文件夹</span>
+      </div>`;
+    // 未分类行
+    const unc = state.files.filter(f=>!f.folder).length;
+    const r0 = document.createElement('div'); r0.className='manage-row';
+    r0.innerHTML = `<span class="manage-dot" style="background:#9aa0aa"></span><span class="manage-name">未分类</span><span class="manage-count">${unc}</span>`;
+    panel.appendChild(r0);
+    // 各文件夹行
+    state.folders.forEach(f=>{
+      const row = document.createElement('div'); row.className='manage-row';
+      row.innerHTML = `<span class="manage-dot" style="background:${state.folderColors[f]||'#aa3bff'}"></span>
+        <span class="manage-name">${f}</span>
+        <span class="manage-count">${countOf(f)}</span>
+        <button class="btn btn-secondary m-btn" data-act="ren">重命名</button>
+        <button class="btn btn-secondary m-btn" data-act="del">删除</button>`;
+      row.querySelector('[data-act=ren]').onclick=()=>{ state.renameFolder=f; state.renameVal=f; state.manageOpen=false; render(); };
+      row.querySelector('[data-act=del]').onclick=()=>{ state.delFolder=f; render(); };
+      panel.appendChild(row);
+    });
+    bar.appendChild(panel);
+  }
+
+  function commitFolder(){
+    const name = (state.renameFolder ? state.renameVal : state.newFolderName).trim();
+    if(!name) { state.addingFolder=false; state.renameFolder=null; render(); return; }
+    if(state.renameFolder){
+      const old = state.renameFolder;
+      if(name!==old){
+        if(state.folders.includes(name)){ toast('文件夹已存在'); return; }
+        state.folders = state.folders.map(f=>f===old?name:f);
+        state.files.forEach(f=>{ if(f.folder===old) f.folder=name; });
+      }
+    } else {
+      if(state.folders.includes(name)){ toast('文件夹已存在'); return; }
+      state.folders.push(name);
+    }
+    state.addingFolder=false; state.renameFolder=null; state.newFolderName='';
+    render();
+  }
+
+  // ===== 工具行 / 批量条 =====
+  function toggleSelectMode(){
+    state.selectMode=!state.selectMode;
+    state.selected=new Set();
+    state.movePick=null;
+    $('selectToggle').className = 'btn ' + (state.selectMode?'btn-primary':'btn-secondary');
+    $('selectToggle').innerHTML = state.selectMode ? '<i class="fas fa-times"></i> 退出多选' : '<i class="fas fa-check-square"></i> 多选';
+    render();
+  }
+
+  function renderBatchBar(){
+    const bar = $('batchBar');
+    bar.innerHTML='';
+    if(!state.selectMode) return;
+    const allSel = filtered().length>0 && filtered().every(f=>state.selected.has(f.id));
+    const wrap = document.createElement('div');
+    wrap.className='file-batch-bar';
+    wrap.innerHTML = `<label style="cursor:pointer" id="selAll"><i class="far ${allSel?'fa-check-square':'fa-square'}"></i> 全选</label>
+      <span class="file-batch-count">已选 ${state.selected.size} 项</span>
+      <div class="file-batch-actions">
+        <button class="btn btn-secondary" id="bMove">迁移</button>
+        <button class="btn btn-secondary" id="bLink">关联</button>
+        <button class="btn btn-secondary" id="bUp">上传</button>
+        <button class="btn btn-secondary" id="bDel">删除</button>
+      </div>`;
+    bar.appendChild(wrap);
+    $('selAll').onclick=()=>{ if(allSel) state.selected=new Set(); else state.selected=new Set(filtered().map(f=>f.id)); render(); };
+    $('bMove').onclick=()=>openMovePicker(Array.from(state.selected));
+    $('bLink').onclick=()=>toast('关联笔记（模拟）');
+    $('bUp').onclick=()=>toast('上传到云端（模拟）');
+    $('bDel').onclick=()=>{ if(confirm(`删除选中的 ${state.selected.size} 个资料？`)){ state.files=state.files.filter(f=>!state.selected.has(f.id)); state.selected=new Set(); toggleSelectMode(); } };
+  }
+
+  // ===== 资料列表 =====
+  function renderList(){
+    const list = $('fileList');
+    list.innerHTML='';
+    const items = filtered();
+    if(items.length===0){
+      const empty = document.createElement('div');
+      empty.className='em';
+      const isEmptyFolder = state.activeFolder && state.activeFolder!=='__unc__';
+      empty.innerHTML = isEmptyFolder
+        ? `「${state.activeFolder}」暂无资料<div class="row"><button class="btn btn-secondary" onclick="toast('上传到该文件夹（模拟）')">＋ 上传资料</button><button class="btn btn-ghost" onclick="askDelFolder('${state.activeFolder}')">删除此文件夹</button></div>`
+        : (state.activeFolder==='__unc__' ? '「未分类」暂无资料，新上传的资料会出现在这里' : '暂无资料');
+      list.appendChild(empty);
+      return;
+    }
+    items.forEach(f=>{
+      const item = document.createElement('div');
+      item.className='file-item' + (state.selectMode && state.selected.has(f.id)?' selected':'');
+      if(state.selectMode) item.style.cursor='pointer';
+      item.onclick = state.selectMode ? ()=>{ if(state.selected.has(f.id)) state.selected.delete(f.id); else state.selected.add(f.id); render(); } : undefined;
+      const check = state.selectMode ? `<div class="file-select-box"><i class="far ${state.selected.has(f.id)?'fa-check-square':'fa-square'}"></i></div>` : '';
+      item.innerHTML = `${check}
+        <div class="file-icon"><i class="fas fa-file"></i></div>
+        <div class="file-info">
+          <div class="file-name">${f.name}</div>
+          <div class="file-meta"><span>${fmtSize(f.size)}</span><span>${f.created}</span>${f.folder?`<span><span class="color-dot" style="background:${state.folderColors[f.folder]||'#aa3bff'}"></span> ${f.folder}</span>`:'<span><span class="color-dot" style="background:#9aa0aa"></span> 未分类</span>'}</div>
+        </div>`;
+      if(!state.selectMode){
+        const act = document.createElement('div'); act.className='file-actions';
+        act.innerHTML = `<button class="btn btn-secondary" title="打开所在文件夹">打开</button>
+          <button class="btn btn-secondary" title="上传到云端">上传</button>
+          <button class="btn btn-secondary" title="关联笔记">关联</button>
+          <button class="btn btn-secondary" title="移动到文件夹">移动</button>
+          <button class="btn btn-secondary" title="删除">删除</button>`;
+        act.children[3].onclick=(e)=>{ e.stopPropagation(); openMovePicker([f.id]); };
+        act.children[4].onclick=(e)=>{ e.stopPropagation(); if(confirm(`删除「${f.name}」？`)){ state.files=state.files.filter(x=>x.id!==f.id); render(); } };
+        item.appendChild(act);
+      }
+      list.appendChild(item);
+    });
+  }
+
+  // ===== 统一移动弹窗 =====
+  function openMovePicker(ids){
+    state.movePick = ids;
+    const root = $('modalRoot');
+    root.innerHTML = `<div class="mask" onclick="closeModal()"><div class="modal" onclick="event.stopPropagation()">
+      <h3>移动到文件夹</h3>
+      <div class="picker-list" id="pickerList"></div>
+      <div class="picker-new">
+        <input id="pickerNew" placeholder="新建文件夹..." onkeydown="if(event.key==='Enter')createAndMove()"/>
+        <button class="btn btn-primary" onclick="createAndMove()">新建并移动</button>
+      </div>
+      <div class="foot"><button class="btn btn-ghost" onclick="closeModal()">取消</button></div>
+    </div></div>`;
+    const pl = $('pickerList');
+    const opt = (label, target)=>{
+      const d=document.createElement('div'); d.className='picker-item';
+      d.innerHTML=`<i class="fas fa-folder"></i> ${label} <span class="num">${target===''?state.files.length:countOf(target)}</span>`;
+      d.onclick=()=>doMove(target);
+      pl.appendChild(d);
+    };
+    opt('未分类（收件箱）', '');
+    state.folders.forEach(f=>opt(f, f));
+    setTimeout(()=>$('pickerNew').focus(), 30);
+  }
+  function doMove(target){
+    state.files.forEach(f=>{ if(state.movePick.includes(f.id)) f.folder=target; });
+    const n=state.movePick.length;
+    closeModal();
+    render();
+    toast(`已将 ${n} 个资料移动到「${target||'未分类'}」`);
+  }
+  function createAndMove(){
+    const name=$('pickerNew').value.trim();
+    if(!name) return;
+    if(!state.folders.includes(name)) state.folders.push(name);
+    doMove(name);
+  }
+
+  // ===== 删除文件夹弹窗（二选一）=====
+  function askDelFolder(name){
+    state.delFolder=name;
+    const n=countOf(name);
+    const root=$('modalRoot');
+    root.innerHTML=`<div class="mask" onclick="closeModal()"><div class="modal" onclick="event.stopPropagation()">
+      <h3>删除文件夹「${name}」</h3>
+      <p>该文件夹内有 <b>${n}</b> 个资料，请选择如何处理：</p>
+      <div class="foot">
+        <button class="btn btn-ghost" onclick="closeModal()">取消</button>
+        <button class="btn btn-secondary" onclick="doDelFolder('move_root')">资料移回根目录</button>
+        <button class="btn danger-btn" onclick="doDelFolder('delete')">连同资料删除</button>
+      </div>
+    </div></div>`;
+  }
+  function doDelFolder(mode){
+    const name=state.delFolder;
+    if(mode==='move_root'){
+      state.files.forEach(f=>{ if(f.folder===name) f.folder=''; });
+      toast(`文件夹「${name}」已删除，资料已移回根目录`);
+    } else {
+      const k=countOf(name);
+      state.files=state.files.filter(f=>f.folder!==name);
+      toast(`文件夹「${name}」及其中 ${k} 个资料已删除`);
+    }
+    state.folders=state.folders.filter(f=>f!==name);
+    if(state.activeFolder===name) state.activeFolder='';
+    state.delFolder=null;
+    closeModal();
+    render();
+  }
+
+  function closeModal(){ $('modalRoot').innerHTML=''; state.movePick=null; state.delFolder=null; }
+
+  render();
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/js/all.min.js"></script>
+</body>
+</html>

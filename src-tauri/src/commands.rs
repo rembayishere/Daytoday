@@ -2,6 +2,7 @@ use tauri::State;
 use tauri::Emitter;
 use tauri::Manager;
 use crate::models::*;
+use crate::models::AttachmentFileStatus;
 use crate::storage;
 use crate::webdav;
 use crate::crypto;
@@ -35,14 +36,20 @@ fn now_iso_filename() -> String {
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+// JS 安全整数上限：2^53 - 1 = 9007199254740991。
+// 超出后 id 在 JS 侧被近似，导致按 id 查找（删除/编辑/关联）静默失效。
+const MAX_SAFE_ID: u64 = 9007199254740991;
+
 fn gen_id() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_micros() as u64;
+        .as_millis() as u64;
     let counter = ID_COUNTER.fetch_add(1, Ordering::Relaxed) % 1000;
-    ts * 1000 + counter
+    // 毫秒时间戳（~1.7e12）左移 10 位容纳计数器，远小于 MAX_SAFE_ID。
+    let id = (ts << 10) + counter;
+    id.min(MAX_SAFE_ID)
 }
 
 const MAX_VERSIONS: usize = 50;
@@ -125,10 +132,24 @@ pub fn add_note(app: tauri::AppHandle, state: State<'_, AppState>, text: String)
 #[tauri::command]
 pub fn delete_note(app: tauri::AppHandle, state: State<'_, AppState>, id: u64) -> Result<AppData, String> {
     let mut data = state.0.lock().unwrap();
+    let found = data.notes.iter().any(|n| n.id == id);
+    if !found {
+        return Err(format!("未找到要删除的记录（id={}），可能已被删除或 id 超出安全范围", id));
+    }
+    // 先用快照保存，再移除内存中的记录，避免「删内存成功但落盘失败」导致状态不一致
+    let snapshot = data.clone();
     data.notes.retain(|n| n.id != id);
-    storage::save(&app, &data)?;
-    app.emit("note-deleted", id).ok();
-    Ok(data.clone())
+    match storage::save(&app, &data) {
+        Ok(()) => {
+            app.emit("note-deleted", id).ok();
+            Ok(data.clone())
+        }
+        Err(e) => {
+            // 落盘失败则回滚内存，保证磁盘与内存一致
+            *data = snapshot;
+            Err(format!("删除记录失败，已取消：{}", e))
+        }
+    }
 }
 
 #[tauri::command]
@@ -439,17 +460,94 @@ pub fn add_attachment(app: tauri::AppHandle, state: State<'_, AppState>, name: S
     Ok(d.clone())
 }
 
+// 从磁盘任意路径添加附件（拖拽上传用）：根据 attachment_move_mode 决定复制还是移动。
+// 与 read_file 不同，不限制源路径必须在附件目录内——用户拖入的本来就是外部文件。
+#[tauri::command]
+pub fn add_attachment_from_path(app: tauri::AppHandle, state: State<'_, AppState>, path: String) -> Result<AppData, String> {
+    let p = std::path::PathBuf::from(&path);
+    let canonical = p.canonicalize().map_err(|e| format!("路径无效: {}", e))?;
+    if !canonical.is_file() {
+        return Err(format!("不是有效文件: {}", path));
+    }
+    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string();
+    let move_mode = {
+        let d = state.0.lock().unwrap();
+        d.attachment_move_mode
+    };
+    if move_mode {
+        // 移动模式：直接把源文件 rename 到附件目录（跨盘时退化为复制）
+        let dest_dir = {
+            let d = state.0.lock().unwrap();
+            get_attachment_dir(&app, &d)
+        };
+        std::fs::create_dir_all(&dest_dir).map_err(|e| format!("创建附件目录失败: {}", e))?;
+        let dest = dest_dir.join(&name);
+        if dest.exists() {
+            return Err(format!("附件目录已存在同名文件: {}", name));
+        }
+        if let Err(e) = std::fs::rename(&canonical, &dest) {
+            // 跨盘/权限导致 rename 失败时退化为复制后删除源文件
+            let data = std::fs::read(&canonical).map_err(|e2| format!("移动附件失败: {} / {}", e, e2))?;
+            std::fs::write(&dest, &data).map_err(|e2| format!("移动附件失败: {} / {}", e, e2))?;
+            let _ = std::fs::remove_file(&canonical);
+        }
+        // 复用 add_attachment 仅做记录写入（不再重复读文件）
+        add_attachment_record_only(app, state, name)
+    } else {
+        // 复制模式：读取源文件字节后写入附件目录，源文件保留
+        let data = std::fs::read(&canonical).map_err(|e| format!("读取文件失败: {}", e))?;
+        add_attachment(app, state, name, data)
+    }
+}
+
+// 仅写入附件记录，不写文件（文件已通过移动/复制就位）。用于移动模式。
+fn add_attachment_record_only(app: tauri::AppHandle, state: State<'_, AppState>, name: String) -> Result<AppData, String> {
+    let mut d = state.0.lock().unwrap();
+    let attach_dir = get_attachment_dir(&app, &d);
+    let file_path = attach_dir.join(&name);
+    let meta = std::fs::metadata(&file_path).map_err(|e| format!("读取文件信息失败: {}", e))?;
+    let attachment = Attachment {
+        id: gen_id(),
+        filename: name,
+        size: meta.len(),
+        note_ids: vec![],
+        folder: String::new(),
+        created: now_iso(),
+        date: today(),
+    };
+    d.attachments.push(attachment);
+    storage::save(&app, &d)?;
+    Ok(d.clone())
+}
+
 #[tauri::command]
 pub fn delete_attachment(app: tauri::AppHandle, state: State<'_, AppState>, id: u64) -> Result<AppData, String> {
     let mut d = state.0.lock().unwrap();
     let attach_dir = get_attachment_dir(&app, &d);
     if let Some(att) = d.attachments.iter().find(|a| a.id == id) {
-        let file_path = attach_dir.join(&att.filename);
-        std::fs::remove_file(&file_path).map_err(|e| format!("删除文件失败: {}", e))?;
+        let dir = if att.folder.is_empty() { attach_dir.clone() } else { attach_dir.join(&att.folder) };
+        let file_path = dir.join(&att.filename);
+        // 文件可能已被外部删除（幽灵记录），缺失时忽略，仅清理记录
+        if file_path.exists() {
+            std::fs::remove_file(&file_path).map_err(|e| format!("删除文件失败: {}", e))?;
+        }
     }
     d.attachments.retain(|a| a.id != id);
     storage::save(&app, &d)?;
     Ok(d.clone())
+}
+
+#[tauri::command]
+pub fn check_attachment_files(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<Vec<AttachmentFileStatus>, String> {
+    let d = state.0.lock().unwrap();
+    let attach_dir = get_attachment_dir(&app, &d);
+    let mut result = Vec::new();
+    for att in &d.attachments {
+        let dir = if att.folder.is_empty() { attach_dir.clone() } else { attach_dir.join(&att.folder) };
+        let file_path = dir.join(&att.filename);
+        result.push(AttachmentFileStatus { id: att.id, exists: file_path.exists() });
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -479,13 +577,118 @@ pub fn move_attachment(app: tauri::AppHandle, state: State<'_, AppState>, id: u6
     let mut d = state.0.lock().unwrap();
     let attach_dir = get_attachment_dir(&app, &d);
     if let Some(att) = d.attachments.iter_mut().find(|a| a.id == id) {
-        let src = attach_dir.join(&att.filename);
+        let src_dir = if att.folder.is_empty() { attach_dir.clone() } else { attach_dir.join(&att.folder) };
+        let src = src_dir.join(&att.filename);
         let dst_dir = if folder.is_empty() { attach_dir.clone() } else { attach_dir.join(&folder) };
         std::fs::create_dir_all(&dst_dir).map_err(|e| format!("创建目录失败: {}", e))?;
         let dst = dst_dir.join(&att.filename);
-        std::fs::rename(&src, &dst).map_err(|e| format!("重命名失败: {}", e))?;
-        att.folder = folder;
+        // 源文件可能已丢失（幽灵记录），仅更新记录不报错
+        if src.exists() {
+            std::fs::rename(&src, &dst).map_err(|e| format!("移动失败: {}", e))?;
+        }
+        att.folder = folder.clone();
+        if !folder.is_empty() && !d.folders.contains(&folder) {
+            d.folders.push(folder);
+        }
     }
+    storage::save(&app, &d)?;
+    Ok(d.clone())
+}
+
+// 新建空文件夹：创建磁盘目录并登记到 folders 列表（即使没有附件也能持久存在）
+#[tauri::command]
+pub fn create_attachment_folder(app: tauri::AppHandle, state: State<'_, AppState>, folder: String) -> Result<AppData, String> {
+    let name = folder.trim().to_string();
+    if name.is_empty() {
+        return Err("文件夹名称不能为空".into());
+    }
+    let mut d = state.0.lock().unwrap();
+    if d.folders.contains(&name) {
+        return Err(format!("文件夹已存在: {}", name));
+    }
+    let attach_dir = get_attachment_dir(&app, &d);
+    let dir = attach_dir.join(&name);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建文件夹失败: {}", e))?;
+    d.folders.push(name);
+    storage::save(&app, &d)?;
+    Ok(d.clone())
+}
+
+// 重命名文件夹：更新 folders 列表与附件的 folder 字段，并重命名磁盘目录
+#[tauri::command]
+pub fn rename_attachment_folder(app: tauri::AppHandle, state: State<'_, AppState>, old_name: String, new_name: String) -> Result<AppData, String> {
+    let old_name = old_name.trim().to_string();
+    let new_name = new_name.trim().to_string();
+    if old_name.is_empty() {
+        return Err("原文件夹名不能为空".into());
+    }
+    if new_name.is_empty() {
+        return Err("新文件夹名不能为空".into());
+    }
+    if old_name == new_name {
+        return Ok(state.0.lock().unwrap().clone());
+    }
+    let mut d = state.0.lock().unwrap();
+    if !d.folders.contains(&old_name) {
+        return Err(format!("文件夹不存在: {}", old_name));
+    }
+    if d.folders.contains(&new_name) {
+        return Err(format!("文件夹已存在: {}", new_name));
+    }
+    let attach_dir = get_attachment_dir(&app, &d);
+    let old_dir = attach_dir.join(&old_name);
+    let new_dir = attach_dir.join(&new_name);
+    if old_dir.exists() {
+        std::fs::create_dir_all(new_dir.parent().unwrap()).map_err(|e| format!("创建目录失败: {}", e))?;
+        std::fs::rename(&old_dir, &new_dir).map_err(|e| format!("重命名文件夹失败: {}", e))?;
+    } else {
+        std::fs::create_dir_all(&new_dir).map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+    d.folders = d.folders.iter().map(|f| if f == &old_name { new_name.clone() } else { f.clone() }).collect();
+    for att in d.attachments.iter_mut() {
+        if att.folder == old_name {
+            att.folder = new_name.clone();
+        }
+    }
+    storage::save(&app, &d)?;
+    Ok(d.clone())
+}
+
+// 删除文件夹：mode = "move_root" 时资料移回未分类（folder 置空），mode = "delete" 时连同资料一起删除
+#[tauri::command]
+pub fn delete_attachment_folder(app: tauri::AppHandle, state: State<'_, AppState>, name: String, mode: String) -> Result<AppData, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("文件夹名不能为空".into());
+    }
+    let mut d = state.0.lock().unwrap();
+    if !d.folders.contains(&name) {
+        return Err(format!("文件夹不存在: {}", name));
+    }
+    let attach_dir = get_attachment_dir(&app, &d);
+    let folder_dir = attach_dir.join(&name);
+    if mode == "delete" {
+        let to_delete: Vec<u64> = d.attachments.iter().filter(|a| a.folder == name).map(|a| a.id).collect();
+        for id in to_delete {
+            if let Some(att) = d.attachments.iter().find(|a| a.id == id) {
+                let file_path = folder_dir.join(&att.filename);
+                if file_path.exists() {
+                    let _ = std::fs::remove_file(&file_path);
+                }
+            }
+        }
+        d.attachments.retain(|a| a.folder != name);
+    } else {
+        for att in d.attachments.iter_mut() {
+            if att.folder == name {
+                att.folder = String::new();
+            }
+        }
+    }
+    if folder_dir.exists() {
+        let _ = std::fs::remove_dir_all(&folder_dir);
+    }
+    d.folders.retain(|f| f != &name);
     storage::save(&app, &d)?;
     Ok(d.clone())
 }
@@ -508,6 +711,17 @@ pub fn open_attachment_folder(state: State<'_, AppState>, app: tauri::AppHandle,
     Ok(())
 }
 
+// 按文件夹名打开资源管理器（管理面板用）
+#[tauri::command]
+pub fn open_attachment_folder_by_name(app: tauri::AppHandle, state: State<'_, AppState>, name: String) -> Result<(), String> {
+    let d = state.0.lock().unwrap();
+    let attach_dir = get_attachment_dir(&app, &d);
+    let path = if name.is_empty() { attach_dir } else { attach_dir.join(&name) };
+    std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+    std::process::Command::new("explorer").arg(&path).spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn list_remote_attachments(
     state: State<'_, AppState>,
@@ -525,12 +739,189 @@ pub async fn list_remote_attachments(
     let path = cfg.path.trim_start_matches('/').trim_end_matches('/');
     let target = format!("{}/{}/attachments/", base_url, path);
 
+    // 先确保云端 attachments 目录存在，避免目录尚未创建时 PROPFIND 直接 404 报错
+    let _ = webdav::ensure_attachment_dir(&cfg).await;
+
     let body = match webdav::propfind_dir(&cfg, &target).await {
         Ok(b) => b,
         Err(e) => return Err(format!("列出云端附件失败：{}", e)),
     };
 
-    Ok(webdav::parse_propfind(&body, &local_names))
+    let parsed = webdav::parse_propfind(&body, &local_names);
+    if parsed.is_empty() {
+        // 解析为空时，把原始响应片段带出，便于排查（目录不存在 / 认证 / XML 命名空间等）
+        let snippet = if body.len() > 800 { &body[..800] } else { &body };
+        return Err(format!(
+            "解析到 0 个云端附件。target={} | 原始响应(前800字): {}",
+            target, snippet
+        ));
+    }
+
+    Ok(parsed)
+}
+
+/// 调试用：返回 PROPFIND 的目标地址、HTTP 状态与原始 XML 响应，
+/// 方便排查「查看/拉取」拿不到云端附件的问题。
+#[tauri::command]
+pub async fn debug_list_remote_attachments(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let cfg = {
+        let d = state.0.lock().unwrap();
+        d.webdav_config.clone()
+    };
+    if cfg.url.is_empty() || cfg.user.is_empty() || cfg.pass.is_empty() {
+        return Err("未配置 WebDAV（url/user/pass 为空）".into());
+    }
+
+    let base_url = cfg.url.trim_end_matches('/').to_string();
+    let path = cfg.path.trim_start_matches('/').trim_end_matches('/');
+    let target = format!("{}/{}/attachments/", base_url, path);
+
+    let mkcol = webdav::ensure_attachment_dir(&cfg).await;
+    let (status, body, parse_count) = match webdav::propfind_with_status(&cfg, &target).await {
+        Ok((status, body)) => {
+            let count = webdav::parse_propfind(&body, &[]).len();
+            (status, body, count)
+        }
+        Err(e) => return Ok(serde_json::json!({
+            "target": target,
+            "mkcol": mkcol,
+            "error": e,
+            "parsed_count": 0,
+        })),
+    };
+
+    Ok(serde_json::json!({
+        "target": target,
+        "mkcol": mkcol,
+        "status": status,
+        "parsed_count": parse_count,
+        "body_len": body.len(),
+        "body_preview": if body.len() > 1500 { &body[..1500] } else { &body },
+        "encrypt": cfg.encrypt,
+        "enc_pass_empty": cfg.enc_pass.is_empty(),
+        "allow_unencrypted": cfg.allow_unencrypted_attachment,
+        "sync_attachments": cfg.sync_attachments,
+    }))
+}
+
+// 校验云端附件是否以加密方式上传：下载首个远程附件，尝试用加密密码解密
+#[tauri::command]
+pub async fn verify_attachment_encryption(state: State<'_, AppState>) -> Result<String, String> {
+    let cfg = {
+        let d = state.0.lock().unwrap();
+        d.webdav_config.clone()
+    };
+    if cfg.url.is_empty() || cfg.user.is_empty() || cfg.pass.is_empty() {
+        return Err("未配置 WebDAV，无法校验".into());
+    }
+    if !cfg.encrypt || cfg.enc_pass.is_empty() {
+        return Err("未启用加密或未设置加密密码，附件将明文上传，无法校验加密".into());
+    }
+    webdav::ensure_attachment_dir(&cfg).await.ok();
+    // 列出云端附件，取第一个文件名
+    let base_url = cfg.url.trim_end_matches('/').to_string();
+    let path = cfg.path.trim_start_matches('/').trim_end_matches('/');
+    let target = format!("{}/{}/attachments/", base_url, path);
+    let body = webdav::propfind_dir(&cfg, &target).await
+        .map_err(|e| format!("列出云端附件失败：{}", e))?;
+    let list = webdav::parse_propfind(&body, &[]);
+    let first = match list.first() {
+        Some(a) => a.filename.clone(),
+        None => return Err("云端暂无附件，无法校验（请先上传附件）".into()),
+    };
+    match webdav::download_file_bytes(&cfg, &first).await {
+        Ok(bytes) => {
+            let b64_str = String::from_utf8(bytes).map_err(|_| "云端附件不是有效的文本（疑似非加密二进制）".to_string())?;
+            match crypto::decrypt(&b64_str, &cfg.enc_pass, if cfg.enc_algorithm.is_empty() { crypto::default_algorithm() } else { &cfg.enc_algorithm }) {
+                Ok(_) => Ok(format!("✅ 校验通过：云端附件「{}」已使用 {} 加密上传，密码正确", first, cfg.enc_algorithm)),
+                Err(_) => Err(format!("⚠ 云端附件「{}」解密失败，可能未加密或密码不匹配", first)),
+            }
+        }
+        Err(e) => Err(format!("下载云端附件失败：{}", e)),
+    }
+}
+
+// 手动上传单个附件到云端（遵循加密/明文规则，与统一同步一致）
+#[tauri::command]
+pub async fn upload_attachment(app: tauri::AppHandle, state: State<'_, AppState>, id: u64) -> Result<String, String> {
+    let (cfg, local_path, filename) = {
+        let d = state.0.lock().unwrap();
+        let att = d.attachments.iter().find(|a| a.id == id)
+            .ok_or_else(|| "附件不存在".to_string())?;
+        let attach_dir = get_attachment_dir(&app, &d);
+        let dir = if att.folder.is_empty() { attach_dir.clone() } else { attach_dir.join(&att.folder) };
+        let path = dir.join(&att.filename);
+        (d.webdav_config.clone(), path, att.filename.clone())
+    };
+    if cfg.url.is_empty() || cfg.user.is_empty() || cfg.pass.is_empty() {
+        return Err("未配置 WebDAV，无法上传".into());
+    }
+    if !local_path.exists() {
+        return Err(format!("本地文件缺失，无法上传：{}", filename));
+    }
+    webdav::ensure_attachment_dir(&cfg).await.ok();
+    let msg = webdav::upload_file(&cfg, local_path.to_str().unwrap(), &filename).await?;
+    let remote = format!("attachments/{}", filename);
+    if webdav::remote_file_exists(&cfg, &remote).await {
+        Ok(format!("{}（已确认云端存在）", msg))
+    } else {
+        Ok(format!("{}（返回成功，但服务端校验未找到，云盘可能不显示 WebDAV 上传的文件）", msg))
+    }
+}
+
+// 从云端手动下载单个附件到本地（遵循加密/明文规则，与统一同步一致）
+#[tauri::command]
+pub async fn download_attachment(app: tauri::AppHandle, state: State<'_, AppState>, filename: String, folder: String) -> Result<AppData, String> {
+    if filename.is_empty() {
+        return Err("文件名不能为空".into());
+    }
+    let cfg = {
+        let d = state.0.lock().unwrap();
+        d.webdav_config.clone()
+    };
+    if cfg.url.is_empty() || cfg.user.is_empty() || cfg.pass.is_empty() {
+        return Err("未配置 WebDAV，无法下载".into());
+    }
+    let attach_dir = {
+        let d = state.0.lock().unwrap();
+        get_attachment_dir(&app, &d)
+    };
+    let target_dir = if folder.is_empty() { attach_dir.clone() } else { attach_dir.join(&folder) };
+    std::fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
+    let _msg = webdav::download_file(&cfg, &filename, target_dir.to_str().unwrap()).await?;
+
+    // 落盘后处理本地记录：无记录则补建；有记录则更新其所属文件夹并把已有文件移到目标目录，避免重复文件
+    let mut d = state.0.lock().unwrap();
+    if let Some(att) = d.attachments.iter_mut().find(|a| a.filename == filename) {
+        if att.folder != folder {
+            let old_dir = if att.folder.is_empty() { attach_dir.clone() } else { attach_dir.join(&att.folder) };
+            let old_path = old_dir.join(&filename);
+            if old_path.exists() && old_path != target_dir.join(&filename) {
+                let _ = std::fs::rename(&old_path, &target_dir.join(&filename));
+            }
+            att.folder = folder.clone();
+            storage::save(&app, &d)?;
+        }
+    } else {
+        let file_path = target_dir.join(&filename);
+        let size = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
+        d.attachments.push(Attachment {
+            id: gen_id(),
+            filename: filename.clone(),
+            size,
+            note_ids: vec![],
+            folder: folder.clone(),
+            created: now_iso(),
+            date: today(),
+        });
+        if !folder.is_empty() && !d.folders.contains(&folder) {
+            d.folders.push(folder.clone());
+        }
+        storage::save(&app, &d)?;
+    }
+    Ok(d.clone())
 }
 
 // === File Operations ===
@@ -656,20 +1047,22 @@ pub fn save_ai_config(app: tauri::AppHandle, state: State<'_, AppState>, url: St
 pub fn save_webdav_config(
     app: tauri::AppHandle, state: State<'_, AppState>,
     url: String, user: String, pass: String, path: String,
-    encrypt: bool, enc_pass: String,
+    encrypt: bool, enc_pass: String, enc_algorithm: String,
     sync_notes: bool, sync_summaries: bool, sync_clips: bool,
     sync_questions: bool, sync_flashcards: bool, sync_tasks: bool,
     sync_attachments: bool, sync_mode: String,
     sync_interval: i64, pull_mode: String, settings_pass: String, sync_settings: bool,
+    allow_unencrypted_attachment: bool,
 ) -> Result<AppData, String> {
     let mut d = state.0.lock().unwrap();
     d.webdav_config = WebdavConfig {
         url, user, pass, path,
-        encrypt, enc_pass,
+        encrypt, enc_pass, enc_algorithm,
         sync_notes, sync_summaries, sync_clips,
         sync_questions, sync_flashcards, sync_tasks,
         sync_attachments, sync_mode,
         sync_interval, pull_mode, settings_pass, sync_settings,
+        allow_unencrypted_attachment,
     };
     storage::save(&app, &d)?;
     Ok(d.clone())
@@ -690,6 +1083,14 @@ pub fn save_data_dir(app: tauri::AppHandle, state: State<'_, AppState>, dir: Str
     d.data_dir = dir.clone();
     storage::save(&app, &d)?;
     Ok(DataDirResult { old_dir, new_dir: dir })
+}
+
+#[tauri::command]
+pub fn save_attachment_move_mode(app: tauri::AppHandle, state: State<'_, AppState>, mode: bool) -> Result<AppData, String> {
+    let mut d = state.0.lock().unwrap();
+    d.attachment_move_mode = mode;
+    storage::save(&app, &d)?;
+    Ok(d.clone())
 }
 
 // === Network (Async) ===
@@ -750,7 +1151,7 @@ pub async fn test_webdav(
 ) -> Result<String, String> {
     let cfg = WebdavConfig {
         url, user, pass, path,
-        encrypt, enc_pass,
+        encrypt, enc_pass, enc_algorithm: String::new(),
         sync_notes, sync_summaries, sync_clips,
         sync_questions, sync_flashcards, sync_tasks,
         sync_attachments, sync_mode,
@@ -758,6 +1159,7 @@ pub async fn test_webdav(
         pull_mode: "add".into(),
         settings_pass: String::new(),
         sync_settings: false,
+        allow_unencrypted_attachment: false,
     };
     webdav::test_connection(&cfg).await
 }
@@ -765,14 +1167,17 @@ pub async fn test_webdav(
 #[tauri::command]
 pub async fn verify_webdav_encryption(
     url: String, user: String, pass: String, path: String,
-    enc_pass: String,
+    enc_pass: String, enc_algorithm: String,
 ) -> Result<String, String> {
     use flate2::read::GzDecoder;
     use std::io::Read;
 
+    let enc_alg = if enc_algorithm.is_empty() { crypto::default_algorithm().to_string() } else { enc_algorithm };
+
     let cfg = WebdavConfig {
         encrypt: !enc_pass.is_empty(),
         enc_pass: enc_pass.clone(),
+        enc_algorithm: enc_alg.clone(),
         sync_interval: 0,
         url, user, pass, path,
         sync_notes: false, sync_summaries: false, sync_clips: false,
@@ -781,6 +1186,7 @@ pub async fn verify_webdav_encryption(
         pull_mode: "add".into(),
         settings_pass: String::new(),
         sync_settings: false,
+        allow_unencrypted_attachment: false,
     };
 
     let raw = webdav::download_raw(&cfg).await?;
@@ -804,7 +1210,7 @@ pub async fn verify_webdav_encryption(
 
     if !enc_pass.is_empty() {
         let b64_str = String::from_utf8(raw).map_err(|_| "远程文件既不是 gzip 也不是有效的文本格式".to_string())?;
-        let decrypted = crypto::decrypt(&b64_str, &enc_pass)?;
+        let decrypted = crypto::decrypt(&b64_str, &enc_pass, &enc_alg)?;
         if let Ok(text) = try_decompress(&decrypted) {
             if serde_json::from_str::<serde_json::Value>(&text).is_ok() {
                 return Ok("✅ 加密验证通过：远程文件已使用 AES-256-GCM 加密，密码正确".to_string());
@@ -1005,6 +1411,46 @@ async fn upload_settings_and_attachments(app: &tauri::AppHandle, state: &State<'
     msgs.join("；")
 }
 
+// 从 WebDAV attachments/ 目录真实文件清单，补全本地附件记录（按 filename 并集）。
+// 这样即便备份 JSON 的 attachments 数组为空/陈旧，拉取后资料面板也能显示云端附件。
+async fn reconcile_attachments_from_remote(
+    cfg: &WebdavConfig,
+    mut attachments: Vec<Attachment>,
+) -> Result<Vec<Attachment>, String> {
+    webdav::ensure_attachment_dir(cfg).await.ok();
+    let base_url = cfg.url.trim_end_matches('/').to_string();
+    let path = cfg.path.trim_start_matches('/').trim_end_matches('/');
+    let target = format!("{}/{}/attachments/", base_url, path);
+    let body = match webdav::propfind_dir(cfg, &target).await {
+        Ok(b) => b,
+        Err(_) => return Ok(attachments), // 目录不可用时不影响主流程
+    };
+    let remote = webdav::parse_propfind(&body, &[]);
+    // 编码无关地去重：同时比较原始文件名与 URL 解码后的文件名，
+    // 避免备份 JSON 中的文件名与 WebDAV href 解码结果因编码差异导致重复。
+    let mut existing: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for a in &attachments {
+        existing.insert(a.filename.clone());
+        existing.insert(webdav::decode_href(&a.filename));
+    }
+    for r in remote {
+        let dec = webdav::decode_href(&r.filename);
+        if existing.contains(&r.filename) || existing.contains(&dec) {
+            continue;
+        }
+        attachments.push(Attachment {
+            id: gen_id(),
+            filename: r.filename,
+            size: r.size,
+            note_ids: vec![],
+            folder: String::new(),
+            created: String::new(),
+            date: String::new(),
+        });
+    }
+    Ok(attachments)
+}
+
 #[tauri::command]
 pub async fn sync_pull(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<String, String> {
     use flate2::read::GzDecoder;
@@ -1046,9 +1492,10 @@ pub async fn sync_pull(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     };
 
     let enc_pass = cfg.enc_pass.clone();
+    let enc_alg = if cfg.enc_algorithm.is_empty() { crypto::default_algorithm().to_string() } else { cfg.enc_algorithm.clone() };
     let decrypted = if cfg.encrypt && !enc_pass.is_empty() {
         let b64_str = String::from_utf8(remote_raw).map_err(|e| e.to_string())?;
-        crypto::decrypt(&b64_str, &enc_pass)?
+        crypto::decrypt(&b64_str, &enc_pass, &enc_alg)?
     } else {
         remote_raw
     };
@@ -1066,7 +1513,8 @@ pub async fn sync_pull(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
 
     let pull_mode = cfg.pull_mode.clone();
 
-    let (attach_dir, remote_attachments) = {
+    // 1) 合并备份 JSON 数据（附件记录始终保留，sync_attachments 仅控制是否下载文件）
+    let mut attachments = {
         let mut local_data = state.0.lock().unwrap();
         match pull_mode.as_str() {
             "overwrite" => {
@@ -1093,21 +1541,66 @@ pub async fn sync_pull(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
             }
         }
         app.emit("sync-progress", serde_json::json!({"progress": 70, "message": "数据已合并"})).ok();
-        (get_attachment_dir(&app, &local_data), local_data.attachments.clone())
+        local_data.attachments.clone()
     };
 
-    // 3. Download missing attachments
-    if cfg.sync_attachments && !remote_attachments.is_empty() {
+    // 2) 从 WebDAV attachments/ 目录真实文件清单补全记录（即使备份 JSON 的 attachments 为空也能显示）
+    attachments = match reconcile_attachments_from_remote(&cfg, attachments).await {
+        Ok(a) => {
+            let mut local_data = state.0.lock().unwrap();
+            local_data.attachments = a.clone();
+            a
+        }
+        Err(e) => {
+            app.emit("sync-progress", serde_json::json!({"progress": 72, "message": &format!("附件记录补全失败（{}），仅保留备份中的数据", e)})).ok();
+            let local_data = state.0.lock().unwrap();
+            local_data.attachments.clone()
+        }
+    };
+
+    // 2.5) 按文件名去重，避免「备份 JSON 中的记录」与「WebDAV 目录中的文件」指向同一文件却产生两条记录
+    {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut deduped: Vec<Attachment> = Vec::with_capacity(attachments.len());
+        for att in attachments {
+            // 归一化：原始名与 URL 解码名都纳入比较
+            let norm1 = att.filename.clone();
+            let norm2 = webdav::decode_href(&att.filename);
+            if seen.contains(&norm1) || seen.contains(&norm2) {
+                continue;
+            }
+            seen.insert(norm1);
+            seen.insert(norm2);
+            deduped.push(att);
+        }
+        attachments = deduped;
+        let mut local_data = state.0.lock().unwrap();
+        local_data.attachments = attachments.clone();
+    }
+
+    // 3. 下载缺失的附件文件（仅当 sync_attachments 开启），失败可见而非静默
+    let attach_dir = {
+        let d = state.0.lock().unwrap();
+        get_attachment_dir(&app, &d)
+    };
+    let mut dl_skipped = 0;
+    let dl_total = attachments.len();
+    if cfg.sync_attachments {
         app.emit("sync-progress", serde_json::json!({"progress": 80, "message": "正在下载缺失的附件..."})).ok();
-        for att in &remote_attachments {
+        for att in &attachments {
             let local_path = attach_dir.join(&att.filename);
             if !local_path.exists() {
                 match webdav::download_file(&cfg, &att.filename, attach_dir.to_str().unwrap()).await {
                     Ok(msg) => { app.emit("sync-progress", serde_json::json!({"progress": 85, "message": &msg})).ok(); }
-                    Err(e) => { app.emit("sync-progress", serde_json::json!({"progress": 85, "message": &format!("附件下载跳过（{}）", e)})).ok(); }
+                    Err(e) => {
+                        dl_skipped += 1;
+                        app.emit("sync-progress", serde_json::json!({"progress": 85, "message": &format!("附件「{}」下载跳过（{}）", att.filename, e)})).ok();
+                    }
                 }
             }
         }
+    } else {
+        app.emit("sync-progress", serde_json::json!({"progress": 80, "message": "已跳过附件文件下载（「资料文件」同步未开启）"})).ok();
     }
 
     app.emit("sync-progress", serde_json::json!({"progress": 95, "message": "正在保存..."})).ok();
@@ -1115,8 +1608,14 @@ pub async fn sync_pull(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     let d = state.0.lock().unwrap();
     storage::save(&app, &d)?;
 
+    let mut result = "拉取完成：云端数据已合并到本地".to_string();
+    if cfg.sync_attachments && dl_skipped > 0 {
+        result.push_str(&format!("；{} 个附件文件未下载（详见进度提示）", dl_skipped));
+    } else if !cfg.sync_attachments && dl_total > 0 {
+        result.push_str("；附件记录已同步，文件未下载（可在设置开启「资料文件」同步）");
+    }
     app.emit("sync-progress", serde_json::json!({"progress": 100, "message": "✅ 拉取完成"})).ok();
-    Ok("拉取完成：云端数据已合并到本地".into())
+    Ok(result)
 }
 
 pub(crate) fn start_auto_sync(app: tauri::AppHandle) {

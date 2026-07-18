@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicepkg/vscode-tauri/master/schemas/tauri.conf.schema.json",
   "productName": "Daytoday",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "identifier": "com.daytoday.app",
   "build": {
     "frontendDist": "../dist",

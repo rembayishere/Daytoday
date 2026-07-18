@@ -43,6 +43,7 @@ export default function SettingsPanel() {
   const saveWebdavConfig = useAppStore((s) => s.saveWebdavConfig)
   const saveShortcuts = useAppStore((s) => s.saveShortcuts)
   const saveAttachmentDir = useAppStore((s) => s.saveAttachmentDir)
+  const saveAttachmentMoveMode = useAppStore((s) => s.saveAttachmentMoveMode)
   const deleteAttachmentDirBackup = useAppStore((s) => s.deleteAttachmentDirBackup)
   const saveDataDir = useAppStore((s) => s.saveDataDir)
   const deleteFile = useAppStore((s) => s.deleteFile)
@@ -58,6 +59,7 @@ export default function SettingsPanel() {
   const [wdPass, setWdPass] = useState('')
   const [wdPath, setWdPath] = useState('/daytoday-backup/')
   const [wdEncPass, setWdEncPass] = useState('')
+  const [wdEncAlgorithm, setWdEncAlgorithm] = useState('aes256-gcm')
   const [wdSyncNotes, setWdSyncNotes] = useState(true)
   const [wdSyncSummaries, setWdSyncSummaries] = useState(true)
   const [wdSyncClips, setWdSyncClips] = useState(true)
@@ -65,6 +67,7 @@ export default function SettingsPanel() {
   const [wdSyncFlashcards, setWdSyncFlashcards] = useState(true)
   const [wdSyncTasks, setWdSyncTasks] = useState(true)
   const [wdSyncAttachments, setWdSyncAttachments] = useState(true)
+  const [wdAllowUnencrypted, setWdAllowUnencrypted] = useState(false)
   const [wdSyncMode, setWdSyncMode] = useState('upload')
   const [wdSyncInterval, setWdSyncInterval] = useState(0)
   const [wdPullMode, setWdPullMode] = useState('add')
@@ -75,6 +78,7 @@ export default function SettingsPanel() {
   const [attDir, setAttDir] = useState('')
   const [attDirResult, setAttDirResult] = useState('')
   const [attMigrate, setAttMigrate] = useState<AttachmentMigrateResult | null>(null)
+  const [attMoveMode, setAttMoveMode] = useState(false)
 
   const [dataDir, setDataDir] = useState('')
   const [oldDataDir, setOldDataDir] = useState('')
@@ -111,6 +115,7 @@ export default function SettingsPanel() {
       setWdPass(data.webdav_config.pass || '')
       setWdPath(data.webdav_config.path || '/daytoday-backup/')
       setWdEncPass(data.webdav_config.enc_pass || '')
+      setWdEncAlgorithm(data.webdav_config.enc_algorithm || 'aes256-gcm')
       setWdSyncNotes(data.webdav_config.sync_notes ?? true)
       setWdSyncSummaries(data.webdav_config.sync_summaries ?? true)
       setWdSyncClips(data.webdav_config.sync_clips ?? true)
@@ -118,12 +123,14 @@ export default function SettingsPanel() {
       setWdSyncFlashcards(data.webdav_config.sync_flashcards ?? true)
       setWdSyncTasks(data.webdav_config.sync_tasks ?? true)
       setWdSyncAttachments(data.webdav_config.sync_attachments ?? true)
+      setWdAllowUnencrypted(data.webdav_config.allow_unencrypted_attachment ?? false)
       setWdSyncMode(data.webdav_config.sync_mode || 'upload')
       setWdSyncInterval(data.webdav_config.sync_interval || 0)
       setWdPullMode(data.webdav_config.pull_mode || 'add')
       setWdSyncSettings(data.webdav_config.sync_settings ?? true)
       setWdSettingsPass(data.webdav_config.settings_pass || '')
       setAttDir(data.attachment_dir || '')
+      setAttMoveMode(data.attachment_move_mode ?? false)
       setDataDir(data.data_dir || '')
       setShortcuts({
         send_note: data.shortcuts?.send_note || 'Ctrl+Enter',
@@ -197,7 +204,7 @@ export default function SettingsPanel() {
     try {
       const res = await invoke<string>('verify_webdav_encryption', {
         url: wdUrl, user: wdUser, pass: wdPass, path: wdPath,
-        encPass: wdEncPass,
+        encPass: wdEncPass, encAlgorithm: wdEncAlgorithm,
       })
       setWdResult(res)
     } catch (e: any) {
@@ -236,10 +243,10 @@ export default function SettingsPanel() {
   const handleSaveWD = async () => {
     const encrypt = wdEncPass !== ''
     await saveWebdavConfig(
-      wdUrl, wdUser, wdPass, wdPath, encrypt, wdEncPass,
+      wdUrl, wdUser, wdPass, wdPath, encrypt, wdEncPass, wdEncAlgorithm,
       wdSyncNotes, wdSyncSummaries, wdSyncClips,
       wdSyncQuestions, wdSyncFlashcards, wdSyncTasks, wdSyncAttachments,
-      wdSyncMode, wdSyncInterval, wdPullMode, wdSettingsPass, wdSyncSettings,
+      wdSyncMode, wdSyncInterval, wdPullMode, wdSettingsPass, wdSyncSettings, wdAllowUnencrypted,
     )
     setWdResult('✅ 已保存')
   }
@@ -323,10 +330,18 @@ export default function SettingsPanel() {
           </div>
           <div style={{border:'1px solid var(--border-input)',borderRadius:'8px',padding:'10px 12px',marginBottom:'8px',background:'var(--btn-secondary-bg)'}}>
             <div style={{fontSize:'.74rem',fontWeight:600,color:'var(--text-secondary)',marginBottom:'8px'}}><i className="fas fa-lock" style={{marginRight:'4px'}}></i> 数据加密（云端数据加密密码）</div>
-            <label>加密密码 <span style={{fontSize:'.68rem',color:'var(--text-muted)',fontWeight:400}}>（留空则不加密，填写后自动启用 AES-256-GCM）</span></label>
+            <label>加密密码 <span style={{fontSize:'.68rem',color:'var(--text-muted)',fontWeight:400}}>（留空则不加密，填写后自动启用加密）</span></label>
             <input type="password" value={wdEncPass} onChange={(e) => setWdEncPass(e.target.value)} placeholder="用于加密云端笔记等数据" />
-            <div style={{fontSize:'.7rem',color:'var(--text-muted)',marginBottom:'8px'}}>
-              {wdEncPass ? '🔒 加密已启用（由加密密码自动控制）' : '🔓 未加密（未填写加密密码）'}
+            <div style={{display:'flex',alignItems:'center',gap:'8px',marginTop:'8px'}}>
+              <label style={{fontSize:'.72rem',color:'var(--text-secondary)',whiteSpace:'nowrap'}}>加密算法</label>
+              <select value={wdEncAlgorithm} onChange={(e) => setWdEncAlgorithm(e.target.value)} style={{padding:'5px 8px',borderRadius:'8px',border:'1px solid var(--border-input)',background:'var(--bg-input)',color:'var(--text-primary)',fontSize:'.75rem'}} disabled={!wdEncPass}>
+                <option value="aes256-gcm">AES-256-GCM（推荐，Argon2 密钥）</option>
+                <option value="chacha20-poly1305">ChaCha20-Poly1305（Argon2 密钥）</option>
+                <option value="aes256-gcm-pbkdf2">AES-256-GCM（PBKDF2 密钥）</option>
+              </select>
+            </div>
+            <div style={{fontSize:'.7rem',color:'var(--text-muted)',marginTop:'8px'}}>
+              {wdEncPass ? '🔒 加密已启用（' + wdEncAlgorithm + '）' : '🔓 未加密（未填写加密密码）'}
             </div>
           </div>
           <div style={{display:'flex',alignItems:'center',gap:'8px',padding:'2px 0 8px'}}>
@@ -369,6 +384,13 @@ export default function SettingsPanel() {
                     </label>
                   )
                 })}
+              </div>
+            )}
+            {wdEncPass === '' && (
+              <div style={{display:'flex',alignItems:'center',gap:'6px',padding:'6px 0 4px 14px'}}>
+                <input type="checkbox" checked={wdAllowUnencrypted} onChange={(e) => setWdAllowUnencrypted(e.target.checked)} />
+                <span style={{fontSize:'.75rem',color:'var(--text-primary)'}}>允许明文上传/下载附件</span>
+                <span style={{fontSize:'.7rem',color:'var(--text-secondary)'}}>（未设置加密密码时必开，否则无法同步资料文件）</span>
               </div>
             )}
           </div>
@@ -493,6 +515,24 @@ export default function SettingsPanel() {
               )}
             </div>
           )}
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'8px',marginTop:'12px',borderTop:'1px solid var(--border)',paddingTop:'10px',cursor:'pointer'}} onClick={async () => {
+            const next = !attMoveMode
+            setAttMoveMode(next)
+            try {
+              await saveAttachmentMoveMode(next)
+              setAttDirResult('✅ 已保存')
+              setTimeout(() => setAttDirResult(''), 2000)
+            } catch (e: any) {
+              setAttMoveMode(!next)
+              setAttDirResult('❌ ' + (typeof e === 'string' ? e : (e?.message || '保存失败')))
+            }
+          }}>
+            <div>
+              <div style={{fontSize:'.78rem',fontWeight:600,color:'var(--text-primary)'}}>拖拽文件时移动而非复制</div>
+              <div style={{fontSize:'.7rem',color:'var(--text-muted)',marginTop:'2px'}}>开启后，拖入的资料会从原位置移入附件目录（原文件不再保留）；关闭则保留原文件只复制一份。</div>
+            </div>
+            <input type="checkbox" checked={attMoveMode} readOnly onClick={(e) => e.stopPropagation()} onChange={() => {}} />
+          </div>
         </div>
         <div className="sg2">
           <h4><i className="fas fa-keyboard" style={{color:'var(--accent)'}}></i> 快捷键</h4>

@@ -19,7 +19,12 @@ function NoteItem({ n, activeDateFilter }: { n: import("../types").Note; activeD
   }
 
   const handleDelete = async () => {
-    await useAppStore.getState().deleteNote(n.id)
+    try {
+      await useAppStore.getState().deleteNote(n.id)
+    } catch (e: any) {
+      console.error('删除记录失败', e)
+      alert(typeof e === 'string' ? e : (e?.message || '删除记录失败'))
+    }
   }
 
   const handleCancel = () => {

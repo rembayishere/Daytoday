@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
-import type { AppData, DataDirResult, Flashcard, RemoteAttachment, AttachmentMigrateResult } from '../types'
+import type { AppData, DataDirResult, Flashcard, RemoteAttachment, AttachmentMigrateResult, AttachmentFileStatus } from '../types'
 
 interface LearningState {
   active: boolean
@@ -55,22 +55,34 @@ interface AppStore {
   toggleTaskSubtask: (taskId: number, status: string, subtaskId: number) => Promise<void>
   deleteTaskSubtask: (taskId: number, status: string, subtaskId: number) => Promise<void>
   addAttachment: (name: string, data: number[]) => Promise<void>
+  addAttachmentFromPath: (path: string) => Promise<void>
   deleteAttachment: (id: number) => Promise<void>
   linkNoteAttachment: (attachmentId: number, noteId: number) => Promise<void>
   unlinkNoteAttachment: (attachmentId: number, noteId: number) => Promise<void>
   moveAttachment: (id: number, folder: string) => Promise<void>
+  createAttachmentFolder: (folder: string) => Promise<void>
+  renameAttachmentFolder: (oldName: string, newName: string) => Promise<void>
+  deleteAttachmentFolder: (name: string, mode: 'move_root' | 'delete') => Promise<void>
   openAttachmentFolder: (id: number) => Promise<void>
+  openAttachmentFolderByName: (name: string) => Promise<void>
+  checkAttachmentFiles: () => Promise<AttachmentFileStatus[]>
   listRemoteAttachments: () => Promise<RemoteAttachment[]>
+  debugListRemoteAttachments: () => Promise<unknown>
+  verifyAttachmentEncryption: () => Promise<string>
+  uploadAttachment: (id: number) => Promise<string>
+  downloadAttachment: (filename: string, folder?: string) => Promise<void>
   saveAttachmentDir: (dir: string) => Promise<AttachmentMigrateResult>
+  saveAttachmentMoveMode: (mode: boolean) => Promise<void>
   deleteAttachmentDirBackup: (path: string) => Promise<void>
   saveAiConfig: (url: string, model: string, key: string) => Promise<void>
   saveWebdavConfig: (
     url: string, user: string, pass: string, path: string,
-    encrypt: boolean, enc_pass: string,
+    encrypt: boolean, enc_pass: string, enc_algorithm: string,
     sync_notes: boolean, sync_summaries: boolean, sync_clips: boolean,
     sync_questions: boolean, sync_flashcards: boolean, sync_tasks: boolean, sync_attachments: boolean,
     sync_mode: string,
     sync_interval: number, pull_mode: string, settings_pass: string, sync_settings: boolean,
+    allow_unencrypted_attachment?: boolean,
   ) => Promise<void>
   syncPull: () => Promise<void>
   saveShortcuts: (send_note: string, quick_note: string) => Promise<void>
@@ -148,7 +160,10 @@ export const useAppStore = create<AppStore>((set) => ({
     try {
       const data = await invoke<AppData>('delete_note', { id })
       set({ data })
-    } catch (e) { console.error('deleteNote failed:', e) }
+    } catch (e) {
+      console.error('deleteNote failed:', e)
+      throw e
+    }
   },
 
   addClip: async (title, url) => {
@@ -281,13 +296,28 @@ export const useAppStore = create<AppStore>((set) => ({
     try {
       const result = await invoke<AppData>('add_attachment', { name, data })
       set({ data: result })
-    } catch (e) { console.error('addAttachment failed:', e) }
+    } catch (e) {
+      console.error('addAttachment failed:', e)
+      throw e
+    }
+  },
+  addAttachmentFromPath: async (path) => {
+    try {
+      const result = await invoke<AppData>('add_attachment_from_path', { path })
+      set({ data: result })
+    } catch (e) {
+      console.error('addAttachmentFromPath failed:', e)
+      throw e
+    }
   },
   deleteAttachment: async (id) => {
     try {
       const result = await invoke<AppData>('delete_attachment', { id })
       set({ data: result })
-    } catch (e) { console.error('deleteAttachment failed:', e) }
+    } catch (e) {
+      console.error('deleteAttachment failed:', e)
+      throw e
+    }
   },
   linkNoteAttachment: async (attachmentId, noteId) => {
     try {
@@ -307,10 +337,42 @@ export const useAppStore = create<AppStore>((set) => ({
       set({ data: result })
     } catch (e) { console.error('moveAttachment failed:', e) }
   },
+  createAttachmentFolder: async (folder) => {
+    try {
+      const data = await invoke<AppData>('create_attachment_folder', { folder })
+      set({ data })
+    } catch (e: any) {
+      console.error('createAttachmentFolder failed:', e)
+      alert(typeof e === 'string' ? e : (e?.message || '新建文件夹失败'))
+    }
+  },
+  renameAttachmentFolder: async (oldName, newName) => {
+    try {
+      const data = await invoke<AppData>('rename_attachment_folder', { oldName, newName })
+      set({ data })
+    } catch (e: any) {
+      console.error('renameAttachmentFolder failed:', e)
+      alert(typeof e === 'string' ? e : (e?.message || '重命名失败'))
+    }
+  },
+  deleteAttachmentFolder: async (name, mode) => {
+    try {
+      const data = await invoke<AppData>('delete_attachment_folder', { name, mode })
+      set({ data })
+    } catch (e: any) {
+      console.error('deleteAttachmentFolder failed:', e)
+      alert(typeof e === 'string' ? e : (e?.message || '删除失败'))
+    }
+  },
   openAttachmentFolder: async (id) => {
     try {
       await invoke('open_attachment_folder', { id })
     } catch (e) { console.error('openAttachmentFolder failed:', e) }
+  },
+  checkAttachmentFiles: async () => {
+    try {
+      return await invoke<AttachmentFileStatus[]>('check_attachment_files')
+    } catch (e) { console.error('checkAttachmentFiles failed:', e); return [] }
   },
   listRemoteAttachments: async () => {
     try {
@@ -326,10 +388,57 @@ export const useAppStore = create<AppStore>((set) => ({
       return result
     } catch (e) { console.error('saveAttachmentDir failed:', e); throw e }
   },
+  saveAttachmentMoveMode: async (mode) => {
+    try {
+      const data = await invoke<AppData>('save_attachment_move_mode', { mode })
+      set({ data })
+    } catch (e) { console.error('saveAttachmentMoveMode failed:', e); throw e }
+  },
   deleteAttachmentDirBackup: async (path) => {
     try {
       await invoke('delete_file', { path })
     } catch (e) { console.error('deleteAttachmentDirBackup failed:', e) }
+  },
+  debugListRemoteAttachments: async () => {
+    try {
+      return await invoke<unknown>('debug_list_remote_attachments')
+    } catch (e) {
+      console.error('debugListRemoteAttachments failed:', e)
+      throw e
+    }
+  },
+  verifyAttachmentEncryption: async () => {
+    try {
+      return await invoke<string>('verify_attachment_encryption')
+    } catch (e) {
+      console.error('verifyAttachmentEncryption failed:', e)
+      throw e
+    }
+  },
+  uploadAttachment: async (id) => {
+    try {
+      return await invoke<string>('upload_attachment', { id })
+    } catch (e) {
+      console.error('uploadAttachment failed:', e)
+      throw e
+    }
+  },
+  downloadAttachment: async (filename, folder = '') => {
+    try {
+      const result = await invoke<AppData>('download_attachment', { filename, folder })
+      set({ data: result })
+    } catch (e) {
+      console.error('downloadAttachment failed:', e)
+      throw e
+    }
+  },
+  openAttachmentFolderByName: async (name) => {
+    try {
+      await invoke('open_attachment_folder_by_name', { name })
+    } catch (e: any) {
+      console.error('openAttachmentFolderByName failed:', e)
+      alert(typeof e === 'string' ? e : (e?.message || '打开文件夹失败'))
+    }
   },
   saveAiConfig: async (url, model, key) => {
     try {
@@ -338,14 +447,15 @@ export const useAppStore = create<AppStore>((set) => ({
     } catch (e) { console.error('saveAiConfig failed:', e) }
   },
 
-  saveWebdavConfig: async (url, user, pass, path, encrypt, enc_pass, sync_notes, sync_summaries, sync_clips, sync_questions, sync_flashcards, sync_tasks, sync_attachments, sync_mode, sync_interval, pull_mode, settings_pass, sync_settings) => {
+  saveWebdavConfig: async (url, user, pass, path, encrypt, enc_pass, enc_algorithm, sync_notes, sync_summaries, sync_clips, sync_questions, sync_flashcards, sync_tasks, sync_attachments, sync_mode, sync_interval, pull_mode, settings_pass, sync_settings, allow_unencrypted_attachment) => {
     try {
       const data = await invoke<AppData>('save_webdav_config', {
-        url, user, pass, path, encrypt, encPass: enc_pass,
+        url, user, pass, path, encrypt, encPass: enc_pass, encAlgorithm: enc_algorithm,
         syncNotes: sync_notes, syncSummaries: sync_summaries, syncClips: sync_clips,
         syncQuestions: sync_questions, syncFlashcards: sync_flashcards, syncTasks: sync_tasks, syncAttachments: sync_attachments,
         syncMode: sync_mode, syncInterval: sync_interval,
         pullMode: pull_mode, settingsPass: settings_pass, syncSettings: sync_settings,
+        allowUnencryptedAttachment: allow_unencrypted_attachment ?? false,
       })
       set({ data })
     } catch (e) { console.error('saveWebdavConfig failed:', e) }
